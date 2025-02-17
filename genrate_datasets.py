@@ -260,7 +260,7 @@ def generate_datasets(images_dir, labels_dir, boards, piece_sets, variations):
         )
         for idx, piece_set in enumerate(piece_sets)
     ]
-    num_workers = max(1, multiprocessing.cpu_count() - 2)
+    num_workers = max(1, multiprocessing.cpu_count())
     with multiprocessing.Pool(num_workers) as pool:
         pool.map(generate_images, tasks)
 
@@ -290,7 +290,7 @@ def genrate_datasets_with_background_noise(
         for idx in range(len(backgrounds))
     ]
 
-    num_workers = max(1, multiprocessing.cpu_count() - 2)
+    num_workers = max(1, multiprocessing.cpu_count())
     with multiprocessing.Pool(num_workers) as pool:
         pool.map(genrate_images_with_background_noise, tasks)
 
