@@ -40,7 +40,7 @@ async def download_image(session, url, resize=True):
                 async with aiofiles.open(path, "wb") as f:
                     await f.write(data)
 
-            print(f"Downloaded: {url} -> {path}")
+            # print(f"Downloaded: {url} -> {path}")
 
 async def main():
     async with aiohttp.ClientSession() as session:
