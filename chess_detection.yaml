@@ -1,0 +1,18 @@
+train: images/train
+val: images/val
+
+nc: 13
+names: 
+  - black_pawn
+  - black_rook
+  - black_knight
+  - black_bishop
+  - black_queen
+  - black_king
+  - white_pawn
+  - white_rook
+  - white_knight
+  - white_bishop
+  - white_queen
+  - white_king
+  - chess_board
