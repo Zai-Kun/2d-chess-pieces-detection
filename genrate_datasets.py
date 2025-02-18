@@ -7,14 +7,14 @@ from PIL import Image, ImageDraw
 from random_fen_gen import generate_fen
 
 ADD_RANDOM_DISTORTIONS = True
-DISTORTION_PROBABILITY = 0.2
+DISTORTION_PROBABILITY = 0.5
 
 GENRATE_IMAGES_WITH_BACKGROUND_NOISE = True
 
 MAKE_LABELS_FOR_CHESSBOARD = True
 BOARD_SIZE = 640
 TILE_SIZE = BOARD_SIZE // 8
-VARIATIONS = 2
+VARIATIONS = 4
 BOARDS_DIR = "assets/boards"
 PIECES_DIR = "assets/pieces"
 BACKGROUND_NOISE_DIR = "assets/random_noise_backgrounds"
@@ -90,7 +90,7 @@ def fen_to_yolo_labels(
     return labels
 
 
-def add_random_lines(board, max_lines=10, max_thickness=5, max_opacity=200):
+def add_random_lines(board, max_lines=20, max_thickness=20, max_opacity=200):
     """Randomly decides whether to add lines, and if so, how many and their properties."""
     if random.random() <= DISTORTION_PROBABILITY:
         overlay = Image.new("RGBA", board.size, (0, 0, 0, 0))
@@ -116,7 +116,7 @@ def add_random_lines(board, max_lines=10, max_thickness=5, max_opacity=200):
     return board  # Return original board if no lines are added
 
 
-def add_random_noise(board, max_points=200, max_radius=5):
+def add_random_noise(board, max_points=200, max_radius=25):
     """Randomly decides whether to add noise points, and if so, how many."""
     if random.random() <= DISTORTION_PROBABILITY:
         draw = ImageDraw.Draw(board)
