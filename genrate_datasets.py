@@ -7,20 +7,20 @@ from PIL import Image, ImageDraw
 from random_fen_gen import generate_fen
 
 ADD_RANDOM_DISTORTIONS = True
-DISTORTION_PROBABILITY = 0.25
+DISTORTION_PROBABILITY = 0.2
 
 GENRATE_IMAGES_WITH_BACKGROUND_NOISE = True
 
 MAKE_LABELS_FOR_CHESSBOARD = True
 BOARD_SIZE = 640
 TILE_SIZE = BOARD_SIZE // 8
-VARIATIONS = 1
+VARIATIONS = 2
 BOARDS_DIR = "assets/boards"
 PIECES_DIR = "assets/pieces"
 BACKGROUND_NOISE_DIR = "assets/random_noise_backgrounds"
 DATASETS_IMAGES_DIR = "datasets/images"
 DATASETS_LABELS_DIR = "datasets/labels"
-VALIDATION_SIZE = 1
+DATA_SPLIT = 0.7
 
 FEN_TO_PIECE = {
     "p": "bP",
@@ -295,14 +295,28 @@ def genrate_datasets_with_background_noise(
         pool.map(genrate_images_with_background_noise, tasks)
 
 
-def main():
-    # Load boards and shuffle them
-    boards = [load_board(board) for board in os.listdir(BOARDS_DIR)]
-    random.shuffle(boards)
+def split_data(boards, pieces_sets, split):
+    train_boards = boards[: int(len(boards) * split)]
+    val_boards = boards[int(len(boards) * split) :]
 
-    # Load piece sets and shuffle them
+    train_piece_sets = pieces_sets[: int(len(pieces_sets) * split)]
+    val_piece_sets = pieces_sets[int(len(pieces_sets) * split) :]
+
+    return train_boards, val_boards, train_piece_sets, val_piece_sets
+
+
+def randomize_and_split_data(boards, pieces_sets, split):
+    random.shuffle(boards)
+    random.shuffle(pieces_sets)
+    return split_data(boards, pieces_sets, split)
+
+
+def main():
+    boards = [load_board(board) for board in os.listdir(BOARDS_DIR)]
     piece_sets = [load_pieces(piece_set) for piece_set in os.listdir(PIECES_DIR)]
-    random.shuffle(piece_sets)
+    train_boards, val_boards, train_piece_sets, val_piece_sets = (
+        randomize_and_split_data(boards, piece_sets, DATA_SPLIT)
+    )
 
     print("Boards and pieces loaded.")
 
@@ -310,8 +324,8 @@ def main():
     generate_datasets(
         DATASETS_IMAGES_DIR + "/train",
         DATASETS_LABELS_DIR + "/train",
-        boards,
-        piece_sets,
+        train_boards,
+        train_piece_sets,
         VARIATIONS,
     )
 
@@ -321,8 +335,8 @@ def main():
     generate_datasets(
         DATASETS_IMAGES_DIR + "/val",
         DATASETS_LABELS_DIR + "/val",
-        boards[: int(len(boards) * VALIDATION_SIZE)],
-        piece_sets[: int(len(piece_sets) * VALIDATION_SIZE)],
+        val_boards,
+        val_piece_sets,
         VARIATIONS,
     )
 
@@ -333,12 +347,22 @@ def main():
 
     print("Generating images with background noise...")
 
+    train_boards, val_boards, train_piece_sets, val_piece_sets = (
+        randomize_and_split_data(boards, piece_sets, DATA_SPLIT)
+    )
+
+    backgrounds = os.listdir(BACKGROUND_NOISE_DIR)
+    train_backgrounds, val_backgrounds = (
+        backgrounds[: int(len(backgrounds) * DATA_SPLIT)],
+        backgrounds[int(len(backgrounds) * DATA_SPLIT) :],
+    )
+
     genrate_datasets_with_background_noise(
         DATASETS_IMAGES_DIR + "/train",
         DATASETS_LABELS_DIR + "/train",
-        boards,
-        piece_sets,
-        os.listdir(BACKGROUND_NOISE_DIR),
+        train_boards,
+        train_piece_sets,
+        train_backgrounds,
         VARIATIONS,
     )
 
@@ -347,9 +371,9 @@ def main():
     genrate_datasets_with_background_noise(
         DATASETS_IMAGES_DIR + "/val",
         DATASETS_LABELS_DIR + "/val",
-        boards,
-        piece_sets,
-        os.listdir(BACKGROUND_NOISE_DIR),
+        val_boards,
+        val_piece_sets,
+        val_backgrounds,
         VARIATIONS,
     )
 
