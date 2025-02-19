@@ -9,6 +9,9 @@ from random_fen_gen import generate_fen
 ADD_RANDOM_DISTORTIONS = True
 DISTORTION_PROBABILITY = 0.5
 
+ROTATE_AND_RESIZE_RANDOMLY = True
+ROTATE_PROBABILITY = 0.35
+
 GENRATE_IMAGES_WITH_BACKGROUND_NOISE = True
 
 MAKE_LABELS_FOR_CHESSBOARD = True
@@ -146,7 +149,50 @@ def generate_image(board, piece_set, fen):
             else:
                 if char in piece_set:
                     x, y = file_index * TILE_SIZE, row * TILE_SIZE
-                    board.paste(piece_set[char], (x, y), piece_set[char])
+                    piece_image = piece_set[char].copy()  # Copy to avoid modifying the original
+
+                    # Apply random scaling if distortions are enabled and probability check passes
+                    if ROTATE_AND_RESIZE_RANDOMLY and random.random() < ROTATE_PROBABILITY:
+                        # Get the bounding box of the actual piece content (non-transparent pixels)
+                        bbox = piece_image.getbbox()
+                        if bbox:
+                            piece_content = piece_image.crop(bbox)
+                            content_width, content_height = piece_content.size
+
+                            # Scale factor (random between 80% and 120% of original size)
+                            scale_factor = random.uniform(0.8, 1.2)
+
+                            # Ensure the resized content does not exceed TILE_SIZE
+                            new_width = min(int(content_width * scale_factor), TILE_SIZE)
+                            new_height = min(int(content_height * scale_factor), TILE_SIZE)
+
+                            # Resize only the non-transparent content
+                            resized_content = piece_content.resize((new_width, new_height))
+
+                            # Create a new transparent image of TILE_SIZE and paste resized content centered
+                            resized_piece = Image.new("RGBA", (TILE_SIZE, TILE_SIZE), (0, 0, 0, 0))
+                            paste_x = (TILE_SIZE - new_width) // 2
+                            paste_y = (TILE_SIZE - new_height) // 2
+                            resized_piece.paste(resized_content, (paste_x, paste_y), resized_content)
+
+                            piece_image = resized_piece  # Use resized image
+
+                    # Apply random rotation if distortions are enabled and probability check passes
+                    if ROTATE_AND_RESIZE_RANDOMLY and random.random() < ROTATE_PROBABILITY:
+                        rotated_piece = piece_image.rotate(
+                            random.uniform(-20, 20), expand=True
+                        )
+
+                        piece_width, piece_height = rotated_piece.size
+                        offset_x = (piece_width - TILE_SIZE) // 2
+                        offset_y = (piece_height - TILE_SIZE) // 2
+
+                        board.paste(
+                            rotated_piece, (x - offset_x, y - offset_y), rotated_piece
+                        )
+                    else:
+                        board.paste(piece_image, (x, y), piece_image)
+
                 file_index += 1
 
     # Add random distortions
