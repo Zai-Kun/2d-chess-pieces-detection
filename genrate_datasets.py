@@ -9,8 +9,11 @@ from random_fen_gen import generate_fen
 ADD_RANDOM_DISTORTIONS = True
 DISTORTION_PROBABILITY = 0.5
 
-ROTATE_AND_RESIZE_RANDOMLY = True
-ROTATE_PROBABILITY = 0.35
+ROTATE_RANDOMLY = True
+ROTATE_PROBABILITY = 0.25
+
+RESIZE_RANDOMLY = True
+RESIZE_PROBABILITY = 0.4
 
 GENRATE_IMAGES_WITH_BACKGROUND_NOISE = True
 
@@ -151,8 +154,7 @@ def generate_image(board, piece_set, fen):
                     x, y = file_index * TILE_SIZE, row * TILE_SIZE
                     piece_image = piece_set[char].copy()  # Copy to avoid modifying the original
 
-                    # Apply random scaling if distortions are enabled and probability check passes
-                    if ROTATE_AND_RESIZE_RANDOMLY and random.random() < ROTATE_PROBABILITY:
+                    if RESIZE_RANDOMLY and random.random() < RESIZE_PROBABILITY:
                         # Get the bounding box of the actual piece content (non-transparent pixels)
                         bbox = piece_image.getbbox()
                         if bbox:
@@ -177,8 +179,7 @@ def generate_image(board, piece_set, fen):
 
                             piece_image = resized_piece  # Use resized image
 
-                    # Apply random rotation if distortions are enabled and probability check passes
-                    if ROTATE_AND_RESIZE_RANDOMLY and random.random() < ROTATE_PROBABILITY:
+                    if ROTATE_RANDOMLY and random.random() < ROTATE_PROBABILITY:
                         rotated_piece = piece_image.rotate(
                             random.uniform(-20, 20), expand=True
                         )
