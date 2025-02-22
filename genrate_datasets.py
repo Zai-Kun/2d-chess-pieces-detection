@@ -43,6 +43,56 @@ FEN_TO_PIECE = {
     "K": "wK",
 }
 
+# for debugging
+def draw_yolo_boxes(image, labels):
+    """
+    Draws bounding boxes on a PIL image using YOLO format labels.
+
+    :param image: PIL Image object.
+    :param labels: List of label strings in YOLO format.
+                   Each label should be "class_id x_center y_center width height"
+                   with values normalized (0 to 1).
+    :return: PIL Image with bounding boxes drawn.
+    """
+    draw = ImageDraw.Draw(image)
+    img_width, img_height = image.size
+    class_colors = {}
+
+    for label in labels:
+        # Remove any stray newlines and extra spaces.
+        label = label.replace("\n", " ").strip()
+        tokens = label.split()  # splits on whitespace and ignores extra spaces
+
+        if len(tokens) != 5:
+            print(f"Skipping malformed label: {label}")
+            continue
+
+        try:
+            class_id = int(tokens[0])
+            x_center, y_center, w, h = map(float, tokens[1:])
+        except ValueError as e:
+            print(f"Error converting tokens for label '{label}': {e}")
+            continue
+
+        # Convert normalized YOLO coordinates to pixel coordinates.
+        x1 = int((x_center - w / 2) * img_width)
+        y1 = int((y_center - h / 2) * img_height)
+        x2 = int((x_center + w / 2) * img_width)
+        y2 = int((y_center + h / 2) * img_height)
+
+        # If this class id does not yet have a color, assign one.
+        if class_id not in class_colors:
+            class_colors[class_id] = (
+                random.randint(0, 255),
+                random.randint(0, 255),
+                random.randint(0, 255),
+            )
+
+        # Draw the bounding box (no text, just the rectangle).
+        draw.rectangle([x1, y1, x2, y2], outline=class_colors[class_id], width=3)
+
+    return image
+
 
 def load_pieces(piece_set):
     return {
@@ -152,7 +202,9 @@ def generate_image(board, piece_set, fen):
             else:
                 if char in piece_set:
                     x, y = file_index * TILE_SIZE, row * TILE_SIZE
-                    piece_image = piece_set[char].copy()  # Copy to avoid modifying the original
+                    piece_image = piece_set[
+                        char
+                    ].copy()  # Copy to avoid modifying the original
 
                     if RESIZE_RANDOMLY and random.random() < RESIZE_PROBABILITY:
                         # Get the bounding box of the actual piece content (non-transparent pixels)
@@ -165,17 +217,27 @@ def generate_image(board, piece_set, fen):
                             scale_factor = random.uniform(0.8, 1.2)
 
                             # Ensure the resized content does not exceed TILE_SIZE
-                            new_width = min(int(content_width * scale_factor), TILE_SIZE)
-                            new_height = min(int(content_height * scale_factor), TILE_SIZE)
+                            new_width = min(
+                                int(content_width * scale_factor), TILE_SIZE
+                            )
+                            new_height = min(
+                                int(content_height * scale_factor), TILE_SIZE
+                            )
 
                             # Resize only the non-transparent content
-                            resized_content = piece_content.resize((new_width, new_height))
+                            resized_content = piece_content.resize(
+                                (new_width, new_height)
+                            )
 
                             # Create a new transparent image of TILE_SIZE and paste resized content centered
-                            resized_piece = Image.new("RGBA", (TILE_SIZE, TILE_SIZE), (0, 0, 0, 0))
+                            resized_piece = Image.new(
+                                "RGBA", (TILE_SIZE, TILE_SIZE), (0, 0, 0, 0)
+                            )
                             paste_x = (TILE_SIZE - new_width) // 2
                             paste_y = (TILE_SIZE - new_height) // 2
-                            resized_piece.paste(resized_content, (paste_x, paste_y), resized_content)
+                            resized_piece.paste(
+                                resized_content, (paste_x, paste_y), resized_content
+                            )
 
                             piece_image = resized_piece  # Use resized image
 
@@ -232,56 +294,61 @@ def generate_images(args):
             image_id += 1
 
 
-def genrate_images_with_background_noise(args):
+def generate_images_with_background_noise(args):
     images_dir, labels_dir, boards, piece_sets, background, variations, image_id = args
 
-    bg_img = Image.open(f"{BACKGROUND_NOISE_DIR}/{background}").convert("RGB")
-    original_bg_size = bg_img.width  # Assume square background
-    scale_factor = BOARD_SIZE / original_bg_size
-    max_pos = original_bg_size - BOARD_SIZE
-    scaled_tile = TILE_SIZE * scale_factor
+    # Load and prepare background image
+    bg_img = (
+        Image.open(f"{BACKGROUND_NOISE_DIR}/{background}")
+        .convert("RGB")
+        .resize((BOARD_SIZE, BOARD_SIZE))
+    )
+    original_bg_size = bg_img.width
 
     for _ in range(variations):
+        # Select and resize chessboard
+        board_img = random.choice(boards).copy()
+        board_size_random = random.randint(250, BOARD_SIZE)
+        scale_factor = board_size_random / original_bg_size
+        scaled_tile = TILE_SIZE * scale_factor
+        max_pos = original_bg_size - board_size_random
+
+        # Copy background and determine random position
         bg_img_copy = bg_img.copy()
         random_x = random.randint(0, max_pos)
         random_y = random.randint(0, max_pos)
 
-        # 3. Create chessboard with pieces
-        board_img = random.choice(boards).copy()
+        # Generate chessboard with pieces
         pieces = random.choice(piece_sets)
         fen = generate_fen()
-        chessboard = generate_image(board_img, pieces, fen)
-
-        # 4. Paste onto background and resize
-        bg_img_copy.paste(chessboard, (random_x, random_y))
-        resized_bg = bg_img_copy.resize((BOARD_SIZE, BOARD_SIZE))
-
-        # 5. Calculate scaled values for label generation
-        random_scaled_x = random_x * scale_factor
-        random_scaled_y = random_y * scale_factor
-
-        # 6. Generate CORRECT labels for resized image
-        labels = fen_to_yolo_labels(
-            fen,
-            x_bias=random_scaled_x,
-            y_bias=random_scaled_y,
-            tile_size=scaled_tile,
+        chessboard = generate_image(board_img, pieces, fen).resize(
+            (board_size_random, board_size_random)
         )
 
-        # 7. Add chessboard label if needed
+        # Overlay chessboard onto background
+        bg_img_copy.paste(chessboard, (random_x, random_y))
+
+        # Convert FEN to YOLO labels
+        labels = fen_to_yolo_labels(
+            fen, x_bias=random_x, y_bias=random_y, tile_size=scaled_tile
+        )
+
+        # Optionally label the entire chessboard
         if MAKE_LABELS_FOR_CHESSBOARD:
             labels.append(
                 yolo_label(
-                    random_scaled_x,
-                    random_scaled_y,
-                    BOARD_SIZE * scale_factor,
-                    BOARD_SIZE * scale_factor,
+                    random_x,
+                    random_y,
+                    board_size_random,
+                    board_size_random,
                     BOARD_SIZE,
                     BOARD_SIZE,
                     "12",
                 )
             )
 
+        # Save image and labels
+        resized_bg = bg_img_copy
         resized_bg.save(f"{images_dir}/{image_id}.jpg", "JPEG", quality=95)
         with open(f"{labels_dir}/{image_id}.txt", "w") as f:
             f.write("\n".join(labels))
@@ -339,7 +406,7 @@ def genrate_datasets_with_background_noise(
 
     num_workers = max(1, multiprocessing.cpu_count())
     with multiprocessing.Pool(num_workers) as pool:
-        pool.map(genrate_images_with_background_noise, tasks)
+        pool.map(generate_images_with_background_noise, tasks)
 
 
 def split_data(boards, pieces_sets, split):
