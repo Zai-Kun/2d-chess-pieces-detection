@@ -5,7 +5,7 @@ from multiprocessing import Pool, cpu_count
 
 BOARDS_DIR = "boards"
 BACKGROUND_DIR = "random_noise_backgrounds"
-NUM_IMAGES = len(os.listdir(BOARDS_DIR))
+NUM_IMAGES = len(os.listdir(BACKGROUND_DIR))
 
 os.makedirs(BACKGROUND_DIR, exist_ok=True)
 
