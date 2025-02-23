@@ -9,7 +9,7 @@ It's pretty good and accurate; almost never fails but when it does, in most case
 I used various chess pieces sets and boards from different websites (mainly from chess.com and lichess) and made a script to generate random chess images with the labels. There are several settings you can tweak inside of 'generate_datasets.py.'
 
 ## Training the model
-To train the model, I first fine-tuned the pre-trained yolo11n.pt for about 20 epochs and then fine-tuned even more by generating a new dataset and training it for 30 epochs with optimizer=adamW. This probably isn't the best way to train it but for now, it's good.
+To train the model, I fine-tuned the pre-trained yolo11n.pt for 60 epochs with the default yolo settings.
 
 ## Usage
 You can find the trained models in the releases page in both formats (pt, onnx).
