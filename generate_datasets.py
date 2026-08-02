@@ -6,20 +6,33 @@ from PIL import Image, ImageDraw
 
 from random_fen_gen import generate_fen
 
+# ---------------------------------------------------------------------------
+# Distortions (toned down from the original — see notes below each change)
+# ---------------------------------------------------------------------------
 ADD_RANDOM_DISTORTIONS = True
-DISTORTION_PROBABILITY = 0.6
+# Was 0.6 for BOTH lines and noise independently, meaning ~84% of images got
+# at least one distortion and ~36% got both. Lowered so the majority of
+# images stay clean and distortions read as occasional noise, not the norm.
+DISTORTION_PROBABILITY = 0.35
 
 ROTATE_RANDOMLY = True
 ROTATE_PROBABILITY = 0.20
 
 RESIZE_RANDOMLY = True
 RESIZE_PROBABILITY = 0.4
+# Canvas used when resizing a piece, as a multiple of TILE_SIZE. Previously
+# the resized content was capped to TILE_SIZE, which silently clipped the
+# "up to 120%" upscale case back down to ~100% for most sprites (since
+# sprites usually already fill most of their tile). A slightly larger
+# working canvas lets the upscale augmentation actually take effect.
+PIECE_CANVAS_SCALE = 1.3
 
 GENRATE_IMAGES_WITH_BACKGROUND_NOISE = True
 
 MAKE_LABELS_FOR_CHESSBOARD = True
 BOARD_SIZE = 640
 TILE_SIZE = BOARD_SIZE // 8
+PIECE_CANVAS_SIZE = int(TILE_SIZE * PIECE_CANVAS_SCALE)
 VARIATIONS = 4
 BOARDS_DIR = "assets/boards"
 PIECES_DIR = "assets/pieces"
@@ -42,6 +55,8 @@ FEN_TO_PIECE = {
     "Q": "wQ",
     "K": "wK",
 }
+FEN_CHAR_ORDER = list(FEN_TO_PIECE.keys())
+
 
 # for debugging
 def draw_yolo_boxes(image, labels):
@@ -59,9 +74,8 @@ def draw_yolo_boxes(image, labels):
     class_colors = {}
 
     for label in labels:
-        # Remove any stray newlines and extra spaces.
         label = label.replace("\n", " ").strip()
-        tokens = label.split()  # splits on whitespace and ignores extra spaces
+        tokens = label.split()
 
         if len(tokens) != 5:
             print(f"Skipping malformed label: {label}")
@@ -74,13 +88,11 @@ def draw_yolo_boxes(image, labels):
             print(f"Error converting tokens for label '{label}': {e}")
             continue
 
-        # Convert normalized YOLO coordinates to pixel coordinates.
         x1 = int((x_center - w / 2) * img_width)
         y1 = int((y_center - h / 2) * img_height)
         x2 = int((x_center + w / 2) * img_width)
         y2 = int((y_center + h / 2) * img_height)
 
-        # If this class id does not yet have a color, assign one.
         if class_id not in class_colors:
             class_colors[class_id] = (
                 random.randint(0, 255),
@@ -88,7 +100,6 @@ def draw_yolo_boxes(image, labels):
                 random.randint(0, 255),
             )
 
-        # Draw the bounding box (no text, just the rectangle).
         draw.rectangle([x1, y1, x2, y2], outline=class_colors[class_id], width=3)
 
     return image
@@ -112,48 +123,66 @@ def load_board(board_file):
 
 
 def yolo_label(x, y, w, h, img_w, img_h, class_id):
-    """Convert chess piece position to YOLO format."""
+    """Convert an absolute pixel box to a YOLO format label string."""
     x_center, y_center = x + w / 2, y + h / 2
     return f"{class_id} {x_center / img_w:.6f} {y_center / img_h:.6f} {w / img_w:.6f} {h / img_h:.6f}"
 
 
-def fen_to_yolo_labels(
-    fen,
-    x_bias: int | float = 0,
-    y_bias: int | float = 0,
-    img_w=BOARD_SIZE,
-    img_h=BOARD_SIZE,
-    tile_size: int | float = TILE_SIZE,
-):
-    """Converts FEN to YOLO labels with scaling awareness."""
-    labels = []
-    for row, fen_rank in enumerate(fen.split()[0].split("/")):
-        file_index = 0
-        for char in fen_rank:
-            if char.isdigit():
-                file_index += int(char)
-            else:
-                if char in FEN_TO_PIECE:
-                    piece_id = str(list(FEN_TO_PIECE.keys()).index(char))
-                    # Calculate absolute coordinates using CURRENT tile size
-                    x = (file_index * tile_size) + x_bias
-                    y = (row * tile_size) + y_bias
-                    # Normalize against background dimensions
-                    labels.append(
-                        yolo_label(x, y, tile_size, tile_size, img_w, img_h, piece_id)
-                    )
-                file_index += 1
-    return labels
+def labels_to_yolo_lines(piece_labels, img_w, img_h, x_bias=0.0, y_bias=0.0, scale=1.0):
+    """
+    Converts a list of (class_id, x, y, w, h) absolute-pixel boxes (computed
+    in the original BOARD_SIZE x BOARD_SIZE coordinate space) into YOLO
+    label lines, applying an optional scale + offset transform. This is used
+    both for the plain dataset (scale=1, bias=0) and for the
+    background-noise dataset, where the whole composited board gets resized
+    and pasted at a random offset onto a background image.
+    """
+    lines = []
+    for class_id, x, y, w, h in piece_labels:
+        fx = x * scale + x_bias
+        fy = y * scale + y_bias
+        fw = w * scale
+        fh = h * scale
+        if fw <= 0 or fh <= 0:
+            continue
+        lines.append(yolo_label(fx, fy, fw, fh, img_w, img_h, class_id))
+    return lines
 
 
-def add_random_lines(board, max_lines=20, max_thickness=20, max_opacity=200):
+def _apply_random_resize(piece_image):
+    """Randomly rescales a piece's actual (non-transparent) content between
+    80% and 120% of its original size, centered on a slightly padded
+    canvas so upscaling isn't silently clipped back down."""
+    bbox = piece_image.getbbox()
+    if not bbox:
+        return piece_image
+
+    piece_content = piece_image.crop(bbox)
+    content_width, content_height = piece_content.size
+
+    scale_factor = random.uniform(0.8, 1.2)
+    new_width = min(int(content_width * scale_factor), PIECE_CANVAS_SIZE)
+    new_height = min(int(content_height * scale_factor), PIECE_CANVAS_SIZE)
+    if new_width <= 0 or new_height <= 0:
+        return piece_image
+
+    resized_content = piece_content.resize((new_width, new_height))
+
+    canvas = Image.new("RGBA", (PIECE_CANVAS_SIZE, PIECE_CANVAS_SIZE), (0, 0, 0, 0))
+    paste_x = (PIECE_CANVAS_SIZE - new_width) // 2
+    paste_y = (PIECE_CANVAS_SIZE - new_height) // 2
+    canvas.paste(resized_content, (paste_x, paste_y), resized_content)
+    return canvas
+
+
+def add_random_lines(board, max_lines=12, max_thickness=10, max_opacity=140):
     """Randomly decides whether to add lines, and if so, how many and their properties."""
     if random.random() <= DISTORTION_PROBABILITY:
         overlay = Image.new("RGBA", board.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
 
         width, height = board.size
-        num_lines = random.randint(1, max_lines)  # Random number of lines
+        num_lines = random.randint(1, max_lines)
 
         for _ in range(num_lines):
             x1, y1 = random.randint(0, width), random.randint(0, height)
@@ -162,22 +191,26 @@ def add_random_lines(board, max_lines=20, max_thickness=20, max_opacity=200):
                 random.randint(0, 255),
                 random.randint(0, 255),
                 random.randint(0, 255),
-                random.randint(50, max_opacity),  # Random opacity
+                random.randint(30, max_opacity),
             )
-            thickness = random.randint(1, max_thickness)  # Random thickness
+            thickness = random.randint(1, max_thickness)
             draw.line([(x1, y1), (x2, y2)], fill=color, width=thickness)
 
         return Image.alpha_composite(board.convert("RGBA"), overlay).convert("RGB")
 
-    return board  # Return original board if no lines are added
+    return board
 
 
-def add_random_noise(board, max_points=200, max_radius=25):
-    """Randomly decides whether to add noise points, and if so, how many."""
+def add_random_noise(board, max_points=40, max_radius=12, max_opacity=140):
+    """Randomly decides whether to add noise points, and if so, how many.
+    Unlike the original version this composites with alpha instead of
+    drawing fully opaque circles directly onto the board, so noise can no
+    longer completely blot out a piece it happens to land on."""
     if random.random() <= DISTORTION_PROBABILITY:
-        draw = ImageDraw.Draw(board)
+        overlay = Image.new("RGBA", board.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
         width, height = board.size
-        num_points = random.randint(1, max_points)  # Random number of noise points
+        num_points = random.randint(1, max_points)
 
         for _ in range(num_points):
             x, y = random.randint(0, width), random.randint(0, height)
@@ -185,85 +218,77 @@ def add_random_noise(board, max_points=200, max_radius=25):
                 random.randint(0, 255),
                 random.randint(0, 255),
                 random.randint(0, 255),
+                random.randint(30, max_opacity),
             )
-            radius = random.randint(1, max_radius)  # Random size of noise
+            radius = random.randint(1, max_radius)
             draw.ellipse([(x, y), (x + radius, y + radius)], fill=color)
 
-    return board  # Return board with or without noise
+        return Image.alpha_composite(board.convert("RGBA"), overlay).convert("RGB")
+
+    return board
 
 
 def generate_image(board, piece_set, fen):
-    # Draw pieces on the board
+    """
+    Draws pieces for the given FEN onto the board.
+
+    Returns (board, piece_labels) where piece_labels is a list of
+    (class_id, x, y, w, h) tuples in absolute pixel coordinates within the
+    BOARD_SIZE x BOARD_SIZE space, tightly fit to the actual rendered
+    (non-transparent) pixels of each piece — not the full tile.
+    """
+    piece_labels = []
+
     for row, fen_rank in enumerate(fen.split()[0].split("/")):
         file_index = 0
         for char in fen_rank:
             if char.isdigit():
                 file_index += int(char)
-            else:
-                if char in piece_set:
-                    x, y = file_index * TILE_SIZE, row * TILE_SIZE
-                    piece_image = piece_set[
-                        char
-                    ].copy()  # Copy to avoid modifying the original
+                continue
 
-                    if RESIZE_RANDOMLY and random.random() < RESIZE_PROBABILITY:
-                        # Get the bounding box of the actual piece content (non-transparent pixels)
-                        bbox = piece_image.getbbox()
-                        if bbox:
-                            piece_content = piece_image.crop(bbox)
-                            content_width, content_height = piece_content.size
-
-                            # Scale factor (random between 80% and 120% of original size)
-                            scale_factor = random.uniform(0.8, 1.2)
-
-                            # Ensure the resized content does not exceed TILE_SIZE
-                            new_width = min(
-                                int(content_width * scale_factor), TILE_SIZE
-                            )
-                            new_height = min(
-                                int(content_height * scale_factor), TILE_SIZE
-                            )
-
-                            # Resize only the non-transparent content
-                            resized_content = piece_content.resize(
-                                (new_width, new_height)
-                            )
-
-                            # Create a new transparent image of TILE_SIZE and paste resized content centered
-                            resized_piece = Image.new(
-                                "RGBA", (TILE_SIZE, TILE_SIZE), (0, 0, 0, 0)
-                            )
-                            paste_x = (TILE_SIZE - new_width) // 2
-                            paste_y = (TILE_SIZE - new_height) // 2
-                            resized_piece.paste(
-                                resized_content, (paste_x, paste_y), resized_content
-                            )
-
-                            piece_image = resized_piece  # Use resized image
-
-                    if ROTATE_RANDOMLY and random.random() < ROTATE_PROBABILITY:
-                        rotated_piece = piece_image.rotate(
-                            random.uniform(-20, 20), expand=True
-                        )
-
-                        piece_width, piece_height = rotated_piece.size
-                        offset_x = (piece_width - TILE_SIZE) // 2
-                        offset_y = (piece_height - TILE_SIZE) // 2
-
-                        board.paste(
-                            rotated_piece, (x - offset_x, y - offset_y), rotated_piece
-                        )
-                    else:
-                        board.paste(piece_image, (x, y), piece_image)
-
+            if char not in piece_set:
                 file_index += 1
+                continue
 
-    # Add random distortions
+            x, y = file_index * TILE_SIZE, row * TILE_SIZE
+            piece_image = piece_set[char].copy()
+
+            if RESIZE_RANDOMLY and random.random() < RESIZE_PROBABILITY:
+                piece_image = _apply_random_resize(piece_image)
+
+            if ROTATE_RANDOMLY and random.random() < ROTATE_PROBABILITY:
+                piece_image = piece_image.rotate(random.uniform(-20, 20), expand=True)
+
+            # Works uniformly whether the piece was resized, rotated, both,
+            # or neither: for an untouched piece (still TILE_SIZE canvas)
+            # this offset is simply 0.
+            offset_x = (piece_image.width - TILE_SIZE) // 2
+            offset_y = (piece_image.height - TILE_SIZE) // 2
+            paste_x, paste_y = x - offset_x, y - offset_y
+
+            board.paste(piece_image, (paste_x, paste_y), piece_image)
+
+            # Tight bbox of what was actually drawn, in board coordinates.
+            bbox = piece_image.getbbox()
+            if bbox:
+                bx1, by1, bx2, by2 = bbox
+                abs_x1 = max(0, paste_x + bx1)
+                abs_y1 = max(0, paste_y + by1)
+                abs_x2 = min(BOARD_SIZE, paste_x + bx2)
+                abs_y2 = min(BOARD_SIZE, paste_y + by2)
+                if abs_x2 > abs_x1 and abs_y2 > abs_y1:
+                    class_id = str(FEN_CHAR_ORDER.index(char))
+                    piece_labels.append(
+                        (class_id, abs_x1, abs_y1, abs_x2 - abs_x1, abs_y2 - abs_y1)
+                    )
+
+            file_index += 1
+
     if ADD_RANDOM_DISTORTIONS:
-        board = add_random_lines(board, max_lines=15, max_thickness=20, max_opacity=180)
-        board = add_random_noise(board, max_points=100, max_radius=35)
+        board = add_random_lines(board)
+        board = add_random_noise(board)
 
-    return board
+    return board, piece_labels
 
 
 def generate_images(args):
@@ -274,22 +299,17 @@ def generate_images(args):
             img_path = f"{images_dir}/{image_id}.jpg"
             label_path = f"{labels_dir}/{image_id}.txt"
 
-            # Save image
-            generate_image(board_image.copy(), pieces, fen).save(
-                img_path, "JPEG", quality=95
-            )
+            image, piece_labels = generate_image(board_image.copy(), pieces, fen)
+            image.save(img_path, "JPEG", quality=95)
 
-            # Save label
+            lines = labels_to_yolo_lines(piece_labels, BOARD_SIZE, BOARD_SIZE)
+            if MAKE_LABELS_FOR_CHESSBOARD:
+                lines.append(
+                    yolo_label(0, 0, BOARD_SIZE, BOARD_SIZE, BOARD_SIZE, BOARD_SIZE, "12")
+                )
+
             with open(label_path, "w") as f:
-                for label in fen_to_yolo_labels(fen):
-                    f.write(label + "\n")
-                if MAKE_LABELS_FOR_CHESSBOARD:
-                    f.write(
-                        yolo_label(
-                            0, 0, BOARD_SIZE, BOARD_SIZE, BOARD_SIZE, BOARD_SIZE, "12"
-                        )
-                        + "\n"
-                    )
+                f.write("\n".join(lines))
 
             image_id += 1
 
@@ -297,7 +317,6 @@ def generate_images(args):
 def generate_images_with_background_noise(args):
     images_dir, labels_dir, boards, piece_sets, background, variations, image_id = args
 
-    # Load and prepare background image
     bg_img = (
         Image.open(f"{BACKGROUND_NOISE_DIR}/{background}")
         .convert("RGB")
@@ -306,34 +325,33 @@ def generate_images_with_background_noise(args):
     original_bg_size = bg_img.width
 
     for _ in range(variations):
-        # Select and resize chessboard
         board_img = random.choice(boards).copy()
         board_size_random = random.randint(80, BOARD_SIZE)
         scale_factor = board_size_random / original_bg_size
-        scaled_tile = TILE_SIZE * scale_factor
         max_pos = original_bg_size - board_size_random
 
-        # Copy background and determine random position
         bg_img_copy = bg_img.copy()
         random_x = random.randint(0, max_pos)
         random_y = random.randint(0, max_pos)
 
-        # Generate chessboard with pieces
         pieces = random.choice(piece_sets)
         fen = generate_fen()
-        chessboard = generate_image(board_img, pieces, fen).resize(
-            (board_size_random, board_size_random)
-        )
+        chessboard, piece_labels = generate_image(board_img, pieces, fen)
+        chessboard = chessboard.resize((board_size_random, board_size_random))
 
-        # Overlay chessboard onto background
         bg_img_copy.paste(chessboard, (random_x, random_y))
 
-        # Convert FEN to YOLO labels
-        labels = fen_to_yolo_labels(
-            fen, x_bias=random_x, y_bias=random_y, tile_size=scaled_tile
+        # piece_labels are in original BOARD_SIZE-space; scale + offset them
+        # to match the resized-and-repositioned chessboard.
+        labels = labels_to_yolo_lines(
+            piece_labels,
+            BOARD_SIZE,
+            BOARD_SIZE,
+            x_bias=random_x,
+            y_bias=random_y,
+            scale=scale_factor,
         )
 
-        # Optionally label the entire chessboard
         if MAKE_LABELS_FOR_CHESSBOARD:
             labels.append(
                 yolo_label(
@@ -347,9 +365,7 @@ def generate_images_with_background_noise(args):
                 )
             )
 
-        # Save image and labels
-        resized_bg = bg_img_copy
-        resized_bg.save(f"{images_dir}/{image_id}.jpg", "JPEG", quality=95)
+        bg_img_copy.save(f"{images_dir}/{image_id}.jpg", "JPEG", quality=95)
         with open(f"{labels_dir}/{image_id}.txt", "w") as f:
             f.write("\n".join(labels))
 
@@ -360,9 +376,7 @@ def generate_datasets(images_dir, labels_dir, boards, piece_sets, variations):
     os.makedirs(images_dir, exist_ok=True)
     os.makedirs(labels_dir, exist_ok=True)
 
-    # Get last saved image index
     current_id = get_next_image_id(images_dir)
-    # Create tasks
     tasks = [
         (
             boards,
@@ -385,12 +399,8 @@ def genrate_datasets_with_background_noise(
     os.makedirs(images_dir, exist_ok=True)
     os.makedirs(labels_dir, exist_ok=True)
 
-    current_id = get_next_image_id(
-        images_dir
-    )  # i hope that images dir and labels dir have the same number of files
-    backgrounds = os.listdir(BACKGROUND_NOISE_DIR)
+    current_id = get_next_image_id(images_dir)
 
-    # images_dir, labels_dir, boards, piece_sets, background, variations, image_id = args
     tasks = [
         (
             images_dir,
@@ -398,8 +408,8 @@ def genrate_datasets_with_background_noise(
             boards,
             piece_sets,
             backgrounds[idx],
-            VARIATIONS,
-            current_id + (idx * VARIATIONS),
+            variations,
+            current_id + (idx * variations),
         )
         for idx in range(len(backgrounds))
     ]
@@ -420,21 +430,41 @@ def split_data(boards, pieces_sets, split):
 
 
 def randomize_and_split_data(boards, pieces_sets, split):
+    boards = boards[:]
+    pieces_sets = pieces_sets[:]
     random.shuffle(boards)
     random.shuffle(pieces_sets)
     return split_data(boards, pieces_sets, split)
 
 
+def get_next_image_id(dir_path):
+    """Returns the next safe image id to use, based on the highest existing
+    numeric filename rather than the file count. Using file count breaks
+    (and can silently overwrite existing image/label pairs) if any files
+    were ever deleted, moved, or if a previous run was interrupted."""
+    ids = []
+    for f in os.listdir(dir_path):
+        name, dot, ext = f.partition(".")
+        if dot and name.isdigit():
+            ids.append(int(name))
+    return max(ids) + 1 if ids else 1
+
+
 def main():
     boards = [load_board(board) for board in os.listdir(BOARDS_DIR)]
     piece_sets = [load_pieces(piece_set) for piece_set in os.listdir(PIECES_DIR)]
+
+    # Split ONCE and reuse the same train/val assets for both the plain
+    # dataset and the background-noise dataset. Previously this split was
+    # re-randomized independently for each dataset type, so a board/piece
+    # set could land in "val" for one dataset and "train" for the other —
+    # leaking assets between the two and making val metrics unreliable.
     train_boards, val_boards, train_piece_sets, val_piece_sets = (
         randomize_and_split_data(boards, piece_sets, DATA_SPLIT)
     )
 
     print("Boards and pieces loaded.")
 
-    # generate training dataset
     generate_datasets(
         DATASETS_IMAGES_DIR + "/train",
         DATASETS_LABELS_DIR + "/train",
@@ -442,10 +472,8 @@ def main():
         train_piece_sets,
         VARIATIONS,
     )
-
     print("Training dataset generated.")
 
-    # generate validation dataset
     generate_datasets(
         DATASETS_IMAGES_DIR + "/val",
         DATASETS_LABELS_DIR + "/val",
@@ -453,7 +481,6 @@ def main():
         val_piece_sets,
         VARIATIONS,
     )
-
     print("Validation dataset generated.")
 
     if not GENRATE_IMAGES_WITH_BACKGROUND_NOISE:
@@ -461,11 +488,8 @@ def main():
 
     print("Generating images with background noise...")
 
-    train_boards, val_boards, train_piece_sets, val_piece_sets = (
-        randomize_and_split_data(boards, piece_sets, DATA_SPLIT)
-    )
-
     backgrounds = os.listdir(BACKGROUND_NOISE_DIR)
+    random.shuffle(backgrounds)
     train_backgrounds, val_backgrounds = (
         backgrounds[: int(len(backgrounds) * DATA_SPLIT)],
         backgrounds[int(len(backgrounds) * DATA_SPLIT) :],
@@ -479,7 +503,6 @@ def main():
         train_backgrounds,
         VARIATIONS,
     )
-
     print("Training dataset with background noise generated.")
 
     genrate_datasets_with_background_noise(
@@ -490,15 +513,7 @@ def main():
         val_backgrounds,
         VARIATIONS,
     )
-
     print("Validation dataset with background noise generated.")
-
-
-def get_next_image_id(dir_path):
-    lst_dir = os.listdir(dir_path)
-    if not lst_dir:
-        return 1
-    return len(lst_dir)
 
 
 if __name__ == "__main__":
