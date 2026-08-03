@@ -326,7 +326,7 @@ def generate_images_with_background_noise(args):
 
     for _ in range(variations):
         board_img = random.choice(boards).copy()
-        board_size_random = random.randint(80, BOARD_SIZE)
+        board_size_random = random.randint(350, BOARD_SIZE)
         scale_factor = board_size_random / original_bg_size
         max_pos = original_bg_size - board_size_random
 
