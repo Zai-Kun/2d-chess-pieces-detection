@@ -1,5 +1,5 @@
-train: images/train
-val: images/val
+train: datasets/images/train
+val: datasets/images/val
 
 nc: 13
 names: 
