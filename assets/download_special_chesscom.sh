@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 set -euo pipefail
@@ -58,6 +57,7 @@ if [[ -f "$HEADER_FILE" ]]; then
 
         curl_args+=(-H "$name: $value")
     done < "$HEADER_FILE"
+
 elif [[ $# -eq 2 ]]; then
     echo "Error: Header file '$HEADER_FILE' not found."
     exit 1
@@ -65,15 +65,24 @@ else
     echo "No headers.txt found. Using curl defaults."
 fi
 
+# Create output directory
 mkdir -p "$DIR"
 
+# Download all pieces
 for piece in "${pieces[@]}"; do
-    echo "Downloading $piece.png..."
+    color="${piece:0:1}"
+    type="${piece:1:1}"
+
+    # Capitalize the piece letter
+    output="${color}${type^^}.png"
+
+    echo "Downloading $output..."
 
     curl "${curl_args[@]}" \
         "$BASE_URL/$piece.png" \
-        -o "$DIR/$piece.png"
+        -o "$DIR/$output"
 done
 
 echo
 echo "Done! Saved theme to: $DIR/"
+
