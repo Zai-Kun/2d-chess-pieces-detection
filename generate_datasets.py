@@ -1,15 +1,32 @@
 import multiprocessing
 import os
 import random
+from io import BytesIO
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 from random_fen_gen import generate_fen
 
 ADD_RANDOM_DISTORTIONS = True
-DISTORTION_PROBABILITY = 0.4
+DISTORTION_PROBABILITY = 0.6
 
-ROTATE_RANDOMLY = True
+# Screenshot-quality augmentations. These do not change image dimensions,
+# so the YOLO bounding boxes remain valid.
+ENABLE_IMAGE_QUALITY_AUGMENTATIONS = True
+JPEG_COMPRESSION_PROBABILITY = 0.45
+JPEG_QUALITY_RANGE = (45, 90)
+DOWNSCALE_PROBABILITY = 0.20
+DOWNSCALE_RANGE = (0.55, 0.90)
+BLUR_PROBABILITY = 0.15
+BLUR_RADIUS_RANGE = (0.3, 1.0)
+BRIGHTNESS_PROBABILITY = 0.25
+BRIGHTNESS_RANGE = (0.75, 1.25)
+CONTRAST_PROBABILITY = 0.25
+CONTRAST_RANGE = (0.75, 1.25)
+COLOR_PROBABILITY = 0.20
+COLOR_RANGE = (0.70, 1.30)
+
+ROTATE_RANDOMLY = False
 ROTATE_PROBABILITY = 0.20
 
 RESIZE_RANDOMLY = True
@@ -186,6 +203,57 @@ def add_random_noise(board, max_points=200, max_radius=25):
     return board  # Return board with or without noise
 
 
+def apply_random_image_effects(image):
+    """Simulate screenshot quality issues without changing image dimensions.
+
+    These effects (color/brightness/contrast, blur, resampling and JPEG
+    compression) do not change object positions, so existing labels stay valid.
+    """
+    if not ENABLE_IMAGE_QUALITY_AUGMENTATIONS:
+        return image
+
+    image = image.convert("RGB")
+
+    if random.random() < BRIGHTNESS_PROBABILITY:
+        image = ImageEnhance.Brightness(image).enhance(
+            random.uniform(*BRIGHTNESS_RANGE)
+        )
+
+    if random.random() < CONTRAST_PROBABILITY:
+        image = ImageEnhance.Contrast(image).enhance(
+            random.uniform(*CONTRAST_RANGE)
+        )
+
+    if random.random() < COLOR_PROBABILITY:
+        image = ImageEnhance.Color(image).enhance(random.uniform(*COLOR_RANGE))
+
+    if random.random() < DOWNSCALE_PROBABILITY:
+        width, height = image.size
+        scale = random.uniform(*DOWNSCALE_RANGE)
+        small_size = (max(1, round(width * scale)), max(1, round(height * scale)))
+        image = image.resize(small_size, Image.Resampling.BILINEAR)
+        image = image.resize((width, height), Image.Resampling.BICUBIC)
+
+    if random.random() < BLUR_PROBABILITY:
+        image = image.filter(
+            ImageFilter.GaussianBlur(radius=random.uniform(*BLUR_RADIUS_RANGE))
+        )
+
+    if random.random() < JPEG_COMPRESSION_PROBABILITY:
+        buffer = BytesIO()
+        image.save(
+            buffer,
+            format="JPEG",
+            quality=random.randint(*JPEG_QUALITY_RANGE),
+            optimize=True,
+        )
+        buffer.seek(0)
+        with Image.open(buffer) as compressed:
+            image = compressed.convert("RGB")
+
+    return image
+
+
 def generate_image(board, piece_set, fen):
     """Draw a position and return its image plus visible piece bounding boxes.
 
@@ -262,8 +330,8 @@ def generate_image(board, piece_set, fen):
                 file_index += 1
 
     if ADD_RANDOM_DISTORTIONS:
-        board = add_random_lines(board, max_lines=15, max_thickness=20, max_opacity=180)
-        board = add_random_noise(board, max_points=100, max_radius=35)
+        board = add_random_lines(board, max_lines=20, max_thickness=20, max_opacity=180)
+        board = add_random_noise(board, max_points=40, max_radius=35)
 
     return board, piece_boxes
 
@@ -277,6 +345,7 @@ def generate_images(args):
             label_path = f"{labels_dir}/{image_id}.txt"
 
             image, piece_boxes = generate_image(board_image.copy(), pieces, fen)
+            image = apply_random_image_effects(image)
             image.save(img_path, "JPEG", quality=95)
 
             labels = piece_boxes_to_yolo_labels(piece_boxes)
@@ -305,7 +374,7 @@ def generate_images_with_background_noise(args):
 
     for _ in range(variations):
         board_img = random.choice(boards).copy()
-        board_size_random = random.randint(80, BOARD_SIZE)
+        board_size_random = random.randint(200, BOARD_SIZE)
         scale_factor = board_size_random / BOARD_SIZE
         max_pos = BOARD_SIZE - board_size_random
 
@@ -343,6 +412,7 @@ def generate_images_with_background_noise(args):
                 )
             )
 
+        bg_img_copy = apply_random_image_effects(bg_img_copy)
         bg_img_copy.save(f"{images_dir}/{image_id}.jpg", "JPEG", quality=95)
         with open(f"{labels_dir}/{image_id}.txt", "w") as f:
             f.write("\n".join(labels))

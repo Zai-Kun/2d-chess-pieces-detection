@@ -3,3 +3,4 @@ __pycache__
 *.zip
 assets/random_noise_backgrounds/*
 datasets/*
+assets/headers.txt
