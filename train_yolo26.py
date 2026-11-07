@@ -83,10 +83,15 @@ def main():
     args = parse_args()
     print_recipe_overview()
 
-    # Check dataset YAML
+    # Check dataset YAML and directory
     if not os.path.exists(args.data):
         print(f"[ERROR] Dataset configuration file not found at: {args.data}")
         print("Please ensure chess_detection.yaml exists and points to your generated dataset.")
+        sys.exit(1)
+
+    if not os.path.exists("datasets/images/train"):
+        print("[ERROR] Dataset directory 'datasets/images/train' not found!")
+        print("Generate dataset first: python3 generate_datasets.py --train-count 3000 --val-count 450 --test-count 450")
         sys.exit(1)
 
     try:

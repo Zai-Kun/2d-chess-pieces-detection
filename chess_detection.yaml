@@ -1,8 +1,7 @@
 # Ultralytics YOLO26 Dataset Configuration for 2D Chess Piece & Board Detection
-path: datasets  # Dataset root directory (relative to script or absolute)
-train: images/train
-val: images/val
-test: images/test
+train: datasets/images/train
+val: datasets/images/val
+test: datasets/images/test
 
 nc: 13
 names:

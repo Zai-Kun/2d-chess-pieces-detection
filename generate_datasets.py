@@ -640,11 +640,18 @@ def compose_embedded_board(board_img, piece_boxes, bg_file, canvas_size=DEFAULT_
     Composition 3: Small or embedded board on realistic photographic background.
     Tests detection robustness on small chessboards and cluttered scenes (STAL).
     """
-    bg_path = os.path.join(BACKGROUND_NOISE_DIR, bg_file)
-    try:
-        canvas = Image.open(bg_path).convert("RGB").resize((canvas_size, canvas_size), Image.Resampling.BICUBIC)
-    except Exception:
-        canvas = Image.new("RGB", (canvas_size, canvas_size), (60, 60, 60))
+    canvas = None
+    if bg_file:
+        for folder in [BACKGROUND_NOISE_DIR, TEXTURES_DIR]:
+            candidate = os.path.join(folder, bg_file) if not os.path.isabs(bg_file) else bg_file
+            if os.path.exists(candidate):
+                try:
+                    canvas = Image.open(candidate).convert("RGB").resize((canvas_size, canvas_size), Image.Resampling.BICUBIC)
+                    break
+                except Exception:
+                    pass
+    if canvas is None:
+        canvas = Image.new("RGB", (canvas_size, canvas_size), (45, 42, 38))
 
     # Board size occupies 28% to 65% of frame
     target_board_size = random.randint(int(canvas_size * 0.28), int(canvas_size * 0.65))
@@ -817,13 +824,23 @@ def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio
     val_boards = all_boards[nb_train : nb_train + nb_val]
     test_boards = all_boards[nb_train + nb_val :]
 
-    all_bgs = sorted(os.listdir(BACKGROUND_NOISE_DIR))
+    # Discover available background images, falling back to textures or procedural
+    all_bgs = []
+    if os.path.exists(BACKGROUND_NOISE_DIR):
+        all_bgs.extend([f for f in os.listdir(BACKGROUND_NOISE_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+    if not all_bgs and os.path.exists(TEXTURES_DIR):
+        all_bgs.extend([f for f in os.listdir(TEXTURES_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
+    if not all_bgs:
+        all_bgs = [f"procedural_{i}.png" for i in range(12)]
+
     rng.shuffle(all_bgs)
-    ng_train = int(len(all_bgs) * train_ratio)
-    ng_val = int(len(all_bgs) * val_ratio)
+    ng_train = max(1, int(len(all_bgs) * train_ratio))
+    ng_val = max(1, int(len(all_bgs) * val_ratio))
     train_bgs = all_bgs[:ng_train]
     val_bgs = all_bgs[ng_train : ng_train + ng_val]
     test_bgs = all_bgs[ng_train + ng_val :]
+    if not test_bgs:
+        test_bgs = val_bgs.copy()
 
     return {
         "train": {"pieces": train_pieces, "boards": train_boards, "bgs": train_bgs},
