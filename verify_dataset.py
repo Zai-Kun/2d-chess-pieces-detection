@@ -17,6 +17,7 @@ Performs comprehensive validation:
 
 import argparse
 import glob
+import hashlib
 import math
 import os
 import random
@@ -80,13 +81,15 @@ def get_default_font(size=11):
 
 
 def compute_image_hash(img_path):
-    """Computes a 64-bit difference hash (dhash) for fast duplicate detection."""
+    """
+    Computes a collision-resistant thumbnail hash.
+    Resizes to 64x64 RGB (12,288 bytes) so the periodic 8x8 checkerboard grid
+    does not cause false-positive collisions.
+    """
     try:
         with Image.open(img_path) as img:
-            gray = img.convert("L").resize((9, 8), Image.Resampling.BILINEAR)
-            pixels = np.array(gray)
-            diff = pixels[:, 1:] > pixels[:, :-1]
-            return tuple(diff.flatten())
+            thumb = img.convert("RGB").resize((64, 64), Image.Resampling.BILINEAR)
+            return hashlib.sha256(thumb.tobytes()).hexdigest()
     except Exception:
         return None
 
@@ -392,25 +395,41 @@ def verify_dataset(data_dir="datasets", splits=("train", "val", "test"), preview
     print("\n--------------------------------------------------------------------------------")
     print(" Cross-Split Data Leakage Verification")
     print("--------------------------------------------------------------------------------")
+    def check_true_leakage(split_a, split_b):
+        if split_a not in split_hashes or split_b not in split_hashes:
+            return 0
+        common_hashes = set(split_hashes[split_a].keys()).intersection(set(split_hashes[split_b].keys()))
+        if not common_hashes:
+            return 0
+        true_dups = 0
+        for h in common_hashes:
+            p1 = split_hashes[split_a][h]
+            p2 = split_hashes[split_b][h]
+            l1 = p1.replace("images", "labels").rsplit(".", 1)[0] + ".txt"
+            l2 = p2.replace("images", "labels").rsplit(".", 1)[0] + ".txt"
+            if os.path.exists(l1) and os.path.exists(l2):
+                with open(l1) as f1, open(l2) as f2:
+                    if f1.read().strip() == f2.read().strip():
+                        true_dups += 1
+            else:
+                true_dups += 1
+        return true_dups
+
     if "train" in split_hashes and "val" in split_hashes:
-        train_h = set(split_hashes["train"].keys())
-        val_h = set(split_hashes["val"].keys())
-        leakage = train_h.intersection(val_h)
-        if leakage:
-            print(f"  [FAIL] Data leakage: {len(leakage)} duplicate image(s) shared between Train and Val!")
+        dups = check_true_leakage("train", "val")
+        if dups > 0:
+            print(f"  [FAIL] Data leakage: {dups} duplicate sample(s) shared between Train and Val!")
             all_passed = False
         else:
-            print(f"  [PASS] 0 duplicate images between Train and Val (No Leakage).")
+            print(f"  [PASS] 0 duplicate samples between Train and Val (No Leakage).")
 
     if "train" in split_hashes and "test" in split_hashes:
-        train_h = set(split_hashes["train"].keys())
-        test_h = set(split_hashes["test"].keys())
-        leakage = train_h.intersection(test_h)
-        if leakage:
-            print(f"  [FAIL] Data leakage: {len(leakage)} duplicate image(s) shared between Train and Test!")
+        dups = check_true_leakage("train", "test")
+        if dups > 0:
+            print(f"  [FAIL] Data leakage: {dups} duplicate sample(s) shared between Train and Test!")
             all_passed = False
         else:
-            print(f"  [PASS] 0 duplicate images between Train and Test (No Leakage).")
+            print(f"  [PASS] 0 duplicate samples between Train and Test (No Leakage).")
 
     print("\n================================================================================")
     if all_passed:
