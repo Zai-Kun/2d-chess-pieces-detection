@@ -1,18 +1,21 @@
-train: datasets/images/train
-val: datasets/images/val
+# Ultralytics YOLO26 Dataset Configuration for 2D Chess Piece & Board Detection
+path: datasets  # Dataset root directory (relative to script or absolute)
+train: images/train
+val: images/val
+test: images/test
 
 nc: 13
-names: 
-  - black_pawn
-  - black_rook
-  - black_knight
-  - black_bishop
-  - black_queen
-  - black_king
-  - white_pawn
-  - white_rook
-  - white_knight
-  - white_bishop
-  - white_queen
-  - white_king
-  - chess_board
+names:
+  0: black_pawn
+  1: black_rook
+  2: black_knight
+  3: black_bishop
+  4: black_queen
+  5: black_king
+  6: white_pawn
+  7: white_rook
+  8: white_knight
+  9: white_bishop
+  10: white_queen
+  11: white_king
+  12: chess_board
