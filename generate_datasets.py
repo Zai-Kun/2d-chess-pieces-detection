@@ -8,7 +8,7 @@ Key features:
 2. Realistic Visual Overlays: Move highlights, check indicators, legal move dots,
    analysis arrows, inner & outer board coordinates.
 3. Realistic Contexts & Environments:
-   - Clean full-board views (85-100% frame)
+   - Clean full-board views (85-100% frame) on a randomized light/dark/neutral-grey solid background
    - Web / App interfaces (Dark/Light themes, Eval bar, player cards, clocks)
    - Embedded / small boards on realistic background clutter (tests small-object detection / STAL)
    - Physical screen captures (perspective keystone warp, subtle moire, vignette, lighting gradients)
@@ -274,6 +274,43 @@ def generate_procedural_board(board_size=DEFAULT_BOARD_SIZE):
     return board
 
 
+def extract_tile_colors(raw_board_img, tile_size, border_px=0):
+    """
+    Extracts representative (R, G, B) colors for light and dark tiles
+    from the raw checkerboard image.
+    Tile (col 0, row 0) is Light; Tile (col 1, row 0) is Dark.
+    Samples from the central 50% region of the squares.
+    `border_px` offsets sampling past an outer coordinate frame, if present.
+    """
+    arr = np.array(raw_board_img)
+    pad = max(1, tile_size // 4)
+    y1 = border_px + pad
+    y2 = border_px + tile_size - pad
+    # Light square (col 0, row 0)
+    light_crop = arr[y1:y2, border_px + pad : border_px + tile_size - pad]
+    light_rgb = tuple(int(round(c)) for c in light_crop.mean(axis=(0, 1))[:3])
+    # Dark square (col 1, row 0)
+    dark_crop = arr[y1:y2, border_px + tile_size + pad : border_px + 2 * tile_size - pad]
+    dark_rgb = tuple(int(round(c)) for c in dark_crop.mean(axis=(0, 1))[:3])
+    return light_rgb, dark_rgb
+
+
+def get_random_solid_background(light_color, dark_color):
+    """
+    Randomly selects between three solid background variations:
+    1. Background matching the light tile color
+    2. Background matching the dark tile color
+    3. A neutral grey background (128, 128, 128)
+    """
+    variant = random.choice(["light", "dark", "grey"])
+    if variant == "light":
+        return light_color
+    elif variant == "dark":
+        return dark_color
+    else:
+        return (128, 128, 128)
+
+
 # ==============================================================================
 # Realistic Visual Overlays: Highlights, Arrows, Coordinates
 # ==============================================================================
@@ -428,11 +465,12 @@ def apply_board_overlays(board_img, fen, tile_size, flipped=False):
     return Image.alpha_composite(board_img.convert("RGBA"), overlay).convert("RGB")
 
 
-def render_board_coordinates(board_img, tile_size, flipped=False, style="inner"):
+def render_board_coordinates(board_img, tile_size, flipped=False, style="inner", frame_color=(45, 42, 38)):
     """
     Renders standard rank ('1'-'8') and file ('a'-'h') coordinate labels.
     - 'inner': Drawn in corners of border tiles (Chess.com / Lichess modern style)
     - 'outer': Border frame with centered letters and numbers
+    `frame_color` matches the solid background so no visible boundary is added.
     """
     font = get_default_font(size=max(10, int(tile_size * 0.16)))
 
@@ -460,7 +498,7 @@ def render_board_coordinates(board_img, tile_size, flipped=False, style="inner")
     elif style == "outer":
         border_px = max(16, int(tile_size * 0.25))
         new_size = board_img.width + 2 * border_px
-        framed = Image.new("RGB", (new_size, new_size), (45, 42, 38))
+        framed = Image.new("RGB", (new_size, new_size), frame_color)
         framed.paste(board_img, (border_px, border_px))
         draw = ImageDraw.Draw(framed)
 
@@ -566,14 +604,26 @@ UI_THEME_COLORS = [
 
 
 def compose_full_board(
-    board_img, piece_boxes, border_px=0, base_board_size=DEFAULT_BOARD_SIZE, canvas_size=DEFAULT_IMAGE_SIZE
+    board_img,
+    piece_boxes,
+    border_px=0,
+    base_board_size=DEFAULT_BOARD_SIZE,
+    canvas_size=DEFAULT_IMAGE_SIZE,
+    bg_color=None,
 ):
     """
     Composition 1: Full-board view.
     Board fills 85-98% of the canvas. Center-aligned with subtle background padding.
+    The background is randomly matched to a light tile, dark tile, or neutral grey.
     The chess_board bounding box strictly bounds the 64 checkerboard squares.
     """
-    canvas = Image.new("RGB", (canvas_size, canvas_size), (30, 28, 26))
+    if bg_color is None:
+        light_color, dark_color = extract_tile_colors(
+            board_img, base_board_size // 8, border_px=border_px
+        )
+        bg_color = get_random_solid_background(light_color, dark_color)
+
+    canvas = Image.new("RGB", (canvas_size, canvas_size), bg_color)
     bw, bh = board_img.size
 
     # Fit within canvas
@@ -711,8 +761,8 @@ def compose_embedded_board(
     if canvas is None:
         canvas = Image.new("RGB", (canvas_size, canvas_size), (45, 42, 38))
 
-    # Board size occupies 32% to 68% of frame
-    target_board_size = random.randint(int(canvas_size * 0.32), int(canvas_size * 0.68))
+    # Small embedded board: 80 to 100 pixels
+    target_board_size = random.randint(80, 100)
     bw, bh = board_img.size
     resized_board = board_img.resize((target_board_size, target_board_size), Image.Resampling.LANCZOS)
 
@@ -981,32 +1031,51 @@ def generate_single_sample(args):
     # 1. Load board & piece sprites
     tile_size = base_board_size // 8
     board_img = load_raw_board(board_file, base_board_size)
+    light_tile_color, dark_tile_color = extract_tile_colors(board_img, tile_size)
     piece_sprites = load_piece_sprites(piece_set_name, tile_size)
 
     # 2. Apply realistic move highlights, arrows, dots
     board_img = apply_board_overlays(board_img, fen, tile_size, flipped=flipped)
 
-    # 3. Add coordinates / border
-    coord_style = random.choices(["none", "inner", "outer"], weights=[0.25, 0.50, 0.25])[0]
-    board_img, border_px = render_board_coordinates(board_img, tile_size, flipped=flipped, style=coord_style)
+    # 3. Choose Composition Environment (Clean 2D digital screen compositions only)
+    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.15, 0.35, 0.30, 0.20])[0]
 
-    # 4. Render pieces and get tight bounding boxes
+    # 4. Solid tile-matched background for clean full-board views only.
+    # Other compositions keep their photographic / themed backgrounds.
+    if comp_type == "full":
+        bg_color = get_random_solid_background(light_tile_color, dark_tile_color)
+    else:
+        bg_color = (45, 42, 38)
+
+    # 5. Add coordinates / border (outer frame blends into the full-board background)
+    coord_style = random.choices(["none", "inner", "outer"], weights=[0.25, 0.50, 0.25])[0]
+    board_img, border_px = render_board_coordinates(
+        board_img, tile_size, flipped=flipped, style=coord_style, frame_color=bg_color
+    )
+
+    # 6. Render pieces and get tight bounding boxes
     board_img, piece_boxes = render_pieces_on_board(
         board_img, piece_sprites, fen, tile_size, border_offset=border_px
     )
 
-    # 5. Choose Composition Environment (Clean 2D digital screen compositions only)
-    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.15, 0.35, 0.30, 0.20])[0]
-
     if comp_type == "full":
         canvas, scaled_boxes, board_box = compose_full_board(
-            board_img, piece_boxes, border_px=border_px, base_board_size=base_board_size, canvas_size=canvas_size
+            board_img,
+            piece_boxes,
+            border_px=border_px,
+            base_board_size=base_board_size,
+            canvas_size=canvas_size,
+            bg_color=bg_color,
         )
         all_boxes = scaled_boxes + ([board_box] if make_board_label else [])
 
     elif comp_type == "ui":
         canvas, scaled_boxes, board_box = compose_web_ui(
-            board_img, piece_boxes, border_px=border_px, base_board_size=base_board_size, canvas_size=canvas_size
+            board_img,
+            piece_boxes,
+            border_px=border_px,
+            base_board_size=base_board_size,
+            canvas_size=canvas_size,
         )
         all_boxes = scaled_boxes + ([board_box] if make_board_label else [])
 

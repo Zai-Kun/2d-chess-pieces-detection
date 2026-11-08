@@ -14,9 +14,9 @@ An advanced, production-grade dataset generation pipeline and quality assurance 
 
 ### 2. High Visual Diversity & Synthetic-to-Real Gap Minimization
 - **Four Composition Environments:**
-  1. **Clean Full Board (85–100% frame):** Borderless or bordered boards with coordinate notation.
+  1. **Clean Full Board (85–100% frame):** Boards placed on a solid background sampled from a light tile, dark tile, or neutral grey — with no visible boundary — plus coordinate notation.
   2. **Web & Desktop Chess Interface (50–75% frame):** Simulates Chess.com, Lichess, and chess applications with dark/light themes, vertical evaluation bars, player avatar cards, rating badges, and digital clocks.
-  3. **Embedded / Cluttered Context (25–65% frame):** Chessboards placed on diverse desktop wallpapers, web pages, and background clutter to train small-object detection (vital for YOLO26's STAL label assignment).
+  3. **Embedded / Small Board Context (80–100 px):** Small chessboards placed on diverse photographic backgrounds and clutter to train small-object detection (vital for YOLO26's STAL label assignment).
   4. **Photographed Screen / Physical Capture:** Simulates smartphone camera captures of computer monitors or phones with keystone perspective warp, subtle LCD sub-pixel moiré patterns, camera vignetting, and lighting gradients.
 - **Realistic In-Game Overlays:**
   - **Move Highlights:** Subtle yellow-green, olive, cyan, or purple highlights on the from-square and to-square.
