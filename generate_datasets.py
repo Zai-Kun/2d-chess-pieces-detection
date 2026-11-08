@@ -361,39 +361,69 @@ def apply_board_overlays(board_img, fen, tile_size, flipped=False):
         kx1, ky1 = kc * tile_size, kr * tile_size
         ov_draw.rectangle([kx1, ky1, kx1 + tile_size, ky1 + tile_size], fill=CHECK_COLOR)
 
-    # 3. Legal move dots & capture rings (20% chance)
-    if random.random() < 0.20:
+    # 3. Legal move dots & capture rings (55% chance)
+    if random.random() < 0.55:
         empty_squares = [(c, r) for c in range(8) for r in range(8) if (c, r) not in occupied]
         if empty_squares:
-            dot_color = (40, 40, 40, 95)
-            dot_r = int(tile_size * 0.14)
-            for c, r in random.sample(empty_squares, min(random.randint(2, 5), len(empty_squares))):
+            dot_color = random.choice([
+                (40, 40, 40, 110),
+                (20, 130, 60, 110),
+                (50, 50, 50, 90),
+            ])
+            dot_r = int(tile_size * random.uniform(0.13, 0.16))
+            num_dots = min(random.randint(3, 9), len(empty_squares))
+            for c, r in random.sample(empty_squares, num_dots):
                 cx = c * tile_size + tile_size // 2
                 cy = r * tile_size + tile_size // 2
                 ov_draw.ellipse([cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r], fill=dot_color)
 
-        # Target capture ring on enemy piece
-        if occupied and random.random() < 0.5:
-            tc, tr = random.choice(list(occupied.keys()))
-            cx = tc * tile_size + tile_size // 2
-            cy = tr * tile_size + tile_size // 2
-            ring_r = int(tile_size * 0.42)
-            ov_draw.ellipse([cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r], outline=(30, 30, 30, 90), width=3)
+        # Target capture ring on enemy piece (1 to 3 rings)
+        if occupied and random.random() < 0.65:
+            num_rings = min(random.randint(1, 3), len(occupied))
+            for tc, tr in random.sample(list(occupied.keys()), num_rings):
+                cx = tc * tile_size + tile_size // 2
+                cy = tr * tile_size + tile_size // 2
+                ring_r = int(tile_size * 0.42)
+                ring_color = random.choice([
+                    (30, 30, 30, 100),
+                    (220, 50, 50, 120),
+                    (30, 140, 60, 120),
+                ])
+                ov_draw.ellipse(
+                    [cx - ring_r, cy - ring_r, cx + ring_r, cy + ring_r],
+                    outline=ring_color,
+                    width=max(3, int(tile_size * 0.045)),
+                )
 
-    # 4. Analysis arrow (20% chance)
-    if random.random() < 0.20:
-        c1, r1 = random.randint(0, 7), random.randint(0, 7)
-        c2, r2 = random.randint(0, 7), random.randint(0, 7)
-        if (c1, r1) != (c2, r2):
-            arrow_color = random.choice([
-                (40, 180, 80, 180),   # Green
-                (245, 140, 30, 180),  # Orange
-                (59, 130, 246, 180),  # Blue
-                (239, 68, 68, 180),   # Red
-            ])
-            p1 = (c1 * tile_size + tile_size // 2, r1 * tile_size + tile_size // 2)
-            p2 = (c2 * tile_size + tile_size // 2, r2 * tile_size + tile_size // 2)
-            draw_arrow(ov_draw, p1, p2, color=arrow_color, width=max(4, int(tile_size * 0.10)))
+    # 4. Analysis arrows (60% chance)
+    if random.random() < 0.60:
+        num_arrows = random.choices([1, 2, 3], weights=[0.45, 0.35, 0.20])[0]
+        used_pairs = set()
+        arrow_palette = [
+            (40, 180, 80, 185),   # Engine Best: Green
+            (59, 130, 246, 185),  # 2nd Best: Blue
+            (245, 140, 30, 185),  # 3rd Best: Orange
+            (239, 68, 68, 185),   # Threat/Blunder: Red
+        ]
+        for a_idx in range(num_arrows):
+            if occupied and random.random() < 0.80:
+                c1, r1 = random.choice(list(occupied.keys()))
+            else:
+                c1, r1 = random.randint(0, 7), random.randint(0, 7)
+            c2, r2 = random.randint(0, 7), random.randint(0, 7)
+            if (c1, r1) != (c2, r2) and (c1, r1, c2, r2) not in used_pairs:
+                used_pairs.add((c1, r1, c2, r2))
+                color = arrow_palette[a_idx % len(arrow_palette)]
+                p1 = (c1 * tile_size + tile_size // 2, r1 * tile_size + tile_size // 2)
+                p2 = (c2 * tile_size + tile_size // 2, r2 * tile_size + tile_size // 2)
+                draw_arrow(
+                    ov_draw,
+                    p1,
+                    p2,
+                    color=color,
+                    width=max(4, int(tile_size * 0.09)),
+                    head_size=max(16, int(tile_size * 0.30)),
+                )
 
     return Image.alpha_composite(board_img.convert("RGBA"), overlay).convert("RGB")
 
@@ -535,10 +565,13 @@ UI_THEME_COLORS = [
 ]
 
 
-def compose_full_board(board_img, piece_boxes, canvas_size=DEFAULT_IMAGE_SIZE):
+def compose_full_board(
+    board_img, piece_boxes, border_px=0, base_board_size=DEFAULT_BOARD_SIZE, canvas_size=DEFAULT_IMAGE_SIZE
+):
     """
     Composition 1: Full-board view.
-    Board fills 85-100% of the canvas. Center-aligned with subtle background padding.
+    Board fills 85-98% of the canvas. Center-aligned with subtle background padding.
+    The chess_board bounding box strictly bounds the 64 checkerboard squares.
     """
     canvas = Image.new("RGB", (canvas_size, canvas_size), (30, 28, 26))
     bw, bh = board_img.size
@@ -560,22 +593,30 @@ def compose_full_board(board_img, piece_boxes, canvas_size=DEFAULT_IMAGE_SIZE):
     for cid, x1, y1, x2, y2 in piece_boxes:
         scaled_boxes.append((cid, ox + x1 * sx, oy + y1 * sy, ox + x2 * sx, oy + y2 * sy))
 
-    board_box = (12, ox, oy, ox + new_w, oy + new_h)
+    # Bounding box strictly for the 64 checkerboard squares (excluding outer coordinate borders)
+    chk_x1 = ox + border_px * sx
+    chk_y1 = oy + border_px * sy
+    chk_x2 = ox + (border_px + base_board_size) * sx
+    chk_y2 = oy + (border_px + base_board_size) * sy
+    board_box = (12, chk_x1, chk_y1, chk_x2, chk_y2)
     return canvas, scaled_boxes, board_box
 
 
-def compose_web_ui(board_img, piece_boxes, canvas_size=DEFAULT_IMAGE_SIZE):
+def compose_web_ui(
+    board_img, piece_boxes, border_px=0, base_board_size=DEFAULT_BOARD_SIZE, canvas_size=DEFAULT_IMAGE_SIZE
+):
     """
     Composition 2: Realistic Web / Desktop Chess Interface.
     Simulates Chess.com or Lichess with eval bar, player names, clocks, and sidebar.
+    The chess_board bounding box strictly bounds the 64 checkerboard squares.
     """
     theme = random.choice(UI_THEME_COLORS)
     canvas = Image.new("RGB", (canvas_size, canvas_size), theme["bg"])
     draw = ImageDraw.Draw(canvas)
     font = get_default_font(size=12)
 
-    # Board size occupies 55% - 75% of canvas height
-    target_board_size = random.randint(int(canvas_size * 0.55), int(canvas_size * 0.75))
+    # Board size occupies 55% - 72% of canvas height
+    target_board_size = random.randint(int(canvas_size * 0.55), int(canvas_size * 0.72))
     bw, bh = board_img.size
     resized_board = board_img.resize((target_board_size, target_board_size), Image.Resampling.LANCZOS)
 
@@ -631,14 +672,27 @@ def compose_web_ui(board_img, piece_boxes, canvas_size=DEFAULT_IMAGE_SIZE):
     for cid, x1, y1, x2, y2 in piece_boxes:
         scaled_boxes.append((cid, board_ox + x1 * sx, board_oy + y1 * sy, board_ox + x2 * sx, board_oy + y2 * sy))
 
-    board_box = (12, board_ox, board_oy, board_ox + target_board_size, board_oy + target_board_size)
+    # Bounding box strictly for the 64 checkerboard squares (excluding outer coordinate borders)
+    chk_x1 = board_ox + border_px * sx
+    chk_y1 = board_oy + border_px * sy
+    chk_x2 = board_ox + (border_px + base_board_size) * sx
+    chk_y2 = board_oy + (border_px + base_board_size) * sy
+    board_box = (12, chk_x1, chk_y1, chk_x2, chk_y2)
     return canvas, scaled_boxes, board_box
 
 
-def compose_embedded_board(board_img, piece_boxes, bg_file, canvas_size=DEFAULT_IMAGE_SIZE):
+def compose_embedded_board(
+    board_img,
+    piece_boxes,
+    border_px=0,
+    base_board_size=DEFAULT_BOARD_SIZE,
+    bg_file=None,
+    canvas_size=DEFAULT_IMAGE_SIZE,
+):
     """
     Composition 3: Small or embedded board on realistic photographic background.
     Tests detection robustness on small chessboards and cluttered scenes (STAL).
+    The chess_board bounding box strictly bounds the 64 checkerboard squares.
     """
     canvas = None
     if bg_file:
@@ -646,15 +700,19 @@ def compose_embedded_board(board_img, piece_boxes, bg_file, canvas_size=DEFAULT_
             candidate = os.path.join(folder, bg_file) if not os.path.isabs(bg_file) else bg_file
             if os.path.exists(candidate):
                 try:
-                    canvas = Image.open(candidate).convert("RGB").resize((canvas_size, canvas_size), Image.Resampling.BICUBIC)
+                    canvas = (
+                        Image.open(candidate)
+                        .convert("RGB")
+                        .resize((canvas_size, canvas_size), Image.Resampling.BICUBIC)
+                    )
                     break
                 except Exception:
                     pass
     if canvas is None:
         canvas = Image.new("RGB", (canvas_size, canvas_size), (45, 42, 38))
 
-    # Board size occupies 28% to 65% of frame
-    target_board_size = random.randint(int(canvas_size * 0.28), int(canvas_size * 0.65))
+    # Board size occupies 32% to 68% of frame
+    target_board_size = random.randint(int(canvas_size * 0.32), int(canvas_size * 0.68))
     bw, bh = board_img.size
     resized_board = board_img.resize((target_board_size, target_board_size), Image.Resampling.LANCZOS)
 
@@ -670,56 +728,102 @@ def compose_embedded_board(board_img, piece_boxes, bg_file, canvas_size=DEFAULT_
     for cid, x1, y1, x2, y2 in piece_boxes:
         scaled_boxes.append((cid, ox + x1 * sx, oy + y1 * sy, ox + x2 * sx, oy + y2 * sy))
 
-    board_box = (12, ox, oy, ox + target_board_size, oy + target_board_size)
+    # Bounding box strictly for the 64 checkerboard squares (excluding outer coordinate borders)
+    chk_x1 = ox + border_px * sx
+    chk_y1 = oy + border_px * sy
+    chk_x2 = ox + (border_px + base_board_size) * sx
+    chk_y2 = oy + (border_px + base_board_size) * sy
+    board_box = (12, chk_x1, chk_y1, chk_x2, chk_y2)
     return canvas, scaled_boxes, board_box
 
 
-def compose_photo_capture(canvas_img, all_boxes, canvas_size=DEFAULT_IMAGE_SIZE):
+def compose_multi_board(
+    main_board_img,
+    main_piece_boxes,
+    main_border_px,
+    main_base_size,
+    sec_board_img,
+    sec_piece_boxes,
+    sec_border_px,
+    sec_base_size,
+    canvas_size=DEFAULT_IMAGE_SIZE,
+):
     """
-    Composition 4: Simulates taking a phone photo of a computer or mobile screen.
-    Applies:
-    - Keystone perspective warp (up to +/- 5% corner displacement)
-    - Camera vignette
-    - Screen moire pattern
-    - Mathematical transformation of bounding boxes via forward homography matrix M.
+    Composition 4: Realistic Multi-Board Tournament / Analysis Broadcast View.
+    Contains:
+    - Primary active game board (54-62% canvas height/width)
+    - Secondary variation or thumbnail board (28-34% canvas), either empty or with pieces
+    - Broadcast top ribbon and sidebar container cards
+    Both boards receive exact 64-square chess_board bounding boxes (excluding outer coordinate borders).
     """
-    # Perspective jitter corners
-    w, h = canvas_size, canvas_size
-    jitter = int(canvas_size * 0.055)
-    src_corners = [(0, 0), (w, 0), (w, h), (0, h)]
-    dst_corners = [
-        (random.randint(0, jitter), random.randint(0, jitter)),
-        (w - random.randint(0, jitter), random.randint(0, jitter)),
-        (w - random.randint(0, jitter), h - random.randint(0, jitter)),
-        (random.randint(0, jitter), h - random.randint(0, jitter)),
-    ]
+    theme = random.choice(UI_THEME_COLORS)
+    canvas = Image.new("RGB", (canvas_size, canvas_size), theme["bg"])
+    draw = ImageDraw.Draw(canvas)
+    font = get_default_font(size=11)
 
-    # Backward coeffs for PIL
-    coeffs = find_perspective_coeffs(dst_corners, src_corners)
-    warped_img = canvas_img.transform(
-        (w, h), Image.Transform.PERSPECTIVE, coeffs, Image.Resampling.BILINEAR
+    # Top header bar (stream / tournament broadcast ribbon)
+    header_h = 34
+    draw.rectangle([0, 0, canvas_size, header_h], fill=theme["card"])
+    draw.text((16, 10), "CHESS TOURNAMENT BROADCAST • LIVE", fill=theme["text"], font=font)
+    draw.text((canvas_size - 80, 10), "MATCH #1", fill=theme["accent"], font=font)
+
+    # 1. Main board: 54% - 62% of canvas (tile size 42-50 px)
+    main_size = random.randint(int(canvas_size * 0.54), int(canvas_size * 0.62))
+    bw1, bh1 = main_board_img.size
+    resized_main = main_board_img.resize((main_size, main_size), Image.Resampling.LANCZOS)
+    main_ox = 18
+    main_oy = header_h + 12 + (canvas_size - header_h - 12 - main_size) // 2
+    canvas.paste(resized_main, (main_ox, main_oy))
+
+    # Scale main pieces
+    sx1 = main_size / bw1
+    sy1 = main_size / bh1
+    scaled_boxes = []
+    for cid, x1, y1, x2, y2 in main_piece_boxes:
+        scaled_boxes.append((cid, main_ox + x1 * sx1, main_oy + y1 * sy1, main_ox + x2 * sx1, main_oy + y2 * sy1))
+
+    # Main board box (strictly 64 checkerboard squares)
+    m_chk_x1 = main_ox + main_border_px * sx1
+    m_chk_y1 = main_oy + main_border_px * sy1
+    m_chk_x2 = main_ox + (main_border_px + main_base_size) * sx1
+    m_chk_y2 = main_oy + (main_border_px + main_base_size) * sy1
+    main_board_box = (12, m_chk_x1, m_chk_y1, m_chk_x2, m_chk_y2)
+
+    # 2. Secondary board in right sidebar: 28% - 34% of canvas (tile size ~23-27 px)
+    sec_max_w = canvas_size - (main_ox + main_size) - 24
+    sec_size = min(int(canvas_size * 0.33), sec_max_w)
+    if sec_size < 160:
+        sec_size = 160
+    bw2, bh2 = sec_board_img.size
+    resized_sec = sec_board_img.resize((sec_size, sec_size), Image.Resampling.LANCZOS)
+    sec_ox = canvas_size - sec_size - 14
+    sec_oy = main_oy + (main_size - sec_size) // 2
+
+    # Draw container card for secondary board
+    card_pad = 6
+    draw.rounded_rectangle(
+        [sec_ox - card_pad, sec_oy - 22, sec_ox + sec_size + card_pad, sec_oy + sec_size + card_pad],
+        radius=4,
+        fill=theme["card"],
     )
+    card_title = "Board 2 (Live Game)" if sec_piece_boxes else "Board 2 (Analysis / Variation)"
+    draw.text((sec_ox, sec_oy - 18), card_title, fill=theme["text"], font=font)
+    canvas.paste(resized_sec, (sec_ox, sec_oy))
 
-    # Forward matrix for bounding box projection
-    M = find_forward_matrix(src_corners, dst_corners)
+    # Scale secondary pieces (if any)
+    sx2 = sec_size / bw2
+    sy2 = sec_size / bh2
+    for cid, x1, y1, x2, y2 in sec_piece_boxes:
+        scaled_boxes.append((cid, sec_ox + x1 * sx2, sec_oy + y1 * sy2, sec_ox + x2 * sx2, sec_oy + y2 * sy2))
 
-    # Project every bounding box
-    projected_boxes = []
-    for cid, x1, y1, x2, y2 in all_boxes:
-        yolo_box = transform_box((x1, y1, x2, y2), M, w, h)
-        if yolo_box is not None:
-            xc, yc, bw, bh = yolo_box
-            projected_boxes.append((cid, xc, yc, bw, bh))
+    # Secondary board box (strictly 64 checkerboard squares)
+    s_chk_x1 = sec_ox + sec_border_px * sx2
+    s_chk_y1 = sec_oy + sec_border_px * sy2
+    s_chk_x2 = sec_ox + (sec_border_px + sec_base_size) * sx2
+    s_chk_y2 = sec_oy + (sec_border_px + sec_base_size) * sy2
+    sec_board_box = (12, s_chk_x1, s_chk_y1, s_chk_x2, s_chk_y2)
 
-    # Apply screen moire (subtle sinusoidal line interference)
-    if random.random() < 0.60:
-        warped_img = apply_screen_moire(warped_img, strength=random.uniform(2.5, 5.0))
-
-    # Apply camera vignette (falloff at corners)
-    if random.random() < 0.70:
-        warped_img = apply_vignette(warped_img, strength=random.uniform(0.20, 0.45))
-
-    return warped_img, projected_boxes
+    return canvas, scaled_boxes, [main_board_box, sec_board_box]
 
 
 # ==============================================================================
@@ -866,6 +970,8 @@ def generate_single_sample(args):
         make_board_label,
         images_dir,
         labels_dir,
+        pieces_pool,
+        boards_pool,
     ) = args
 
     # Deterministic position generation
@@ -889,50 +995,84 @@ def generate_single_sample(args):
         board_img, piece_sprites, fen, tile_size, border_offset=border_px
     )
 
-    # 5. Choose Composition Environment
-    comp_type = random.choices(["full", "ui", "embedded", "photo"], weights=[0.25, 0.35, 0.25, 0.15])[0]
+    # 5. Choose Composition Environment (Clean 2D digital screen compositions only)
+    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.15, 0.35, 0.30, 0.20])[0]
 
     if comp_type == "full":
-        canvas, scaled_boxes, board_box = compose_full_board(board_img, piece_boxes, canvas_size)
+        canvas, scaled_boxes, board_box = compose_full_board(
+            board_img, piece_boxes, border_px=border_px, base_board_size=base_board_size, canvas_size=canvas_size
+        )
         all_boxes = scaled_boxes + ([board_box] if make_board_label else [])
-        # Convert to YOLO format
-        yolo_labels = []
-        for cid, x1, y1, x2, y2 in all_boxes:
-            xc = (x1 + x2) / (2.0 * canvas_size)
-            yc = (y1 + y2) / (2.0 * canvas_size)
-            w = (x2 - x1) / float(canvas_size)
-            h = (y2 - y1) / float(canvas_size)
-            yolo_labels.append(yolo_label_str(cid, xc, yc, w, h))
 
     elif comp_type == "ui":
-        canvas, scaled_boxes, board_box = compose_web_ui(board_img, piece_boxes, canvas_size)
+        canvas, scaled_boxes, board_box = compose_web_ui(
+            board_img, piece_boxes, border_px=border_px, base_board_size=base_board_size, canvas_size=canvas_size
+        )
         all_boxes = scaled_boxes + ([board_box] if make_board_label else [])
-        yolo_labels = []
-        for cid, x1, y1, x2, y2 in all_boxes:
-            xc = (x1 + x2) / (2.0 * canvas_size)
-            yc = (y1 + y2) / (2.0 * canvas_size)
-            w = (x2 - x1) / float(canvas_size)
-            h = (y2 - y1) / float(canvas_size)
-            yolo_labels.append(yolo_label_str(cid, xc, yc, w, h))
 
     elif comp_type == "embedded":
-        canvas, scaled_boxes, board_box = compose_embedded_board(board_img, piece_boxes, bg_file, canvas_size)
+        canvas, scaled_boxes, board_box = compose_embedded_board(
+            board_img,
+            piece_boxes,
+            border_px=border_px,
+            base_board_size=base_board_size,
+            bg_file=bg_file,
+            canvas_size=canvas_size,
+        )
         all_boxes = scaled_boxes + ([board_box] if make_board_label else [])
-        yolo_labels = []
-        for cid, x1, y1, x2, y2 in all_boxes:
-            xc = (x1 + x2) / (2.0 * canvas_size)
-            yc = (y1 + y2) / (2.0 * canvas_size)
-            w = (x2 - x1) / float(canvas_size)
-            h = (y2 - y1) / float(canvas_size)
-            yolo_labels.append(yolo_label_str(cid, xc, yc, w, h))
 
-    else:  # 'photo' mode with perspective keystone distortion
-        # First compose as full or embedded
-        base_canvas, scaled_boxes, board_box = compose_full_board(board_img, piece_boxes, canvas_size)
-        all_boxes = scaled_boxes + ([board_box] if make_board_label else [])
-        canvas, projected_boxes = compose_photo_capture(base_canvas, all_boxes, canvas_size)
-        yolo_labels = []
-        for cid, xc, yc, w, h in projected_boxes:
+    else:  # "multi" - Multi-board tournament / analysis broadcast view
+        sec_board_file = random.choice(boards_pool)
+        sec_tile_size = base_board_size // 8
+        sec_board_raw = load_raw_board(sec_board_file, base_board_size)
+        is_sec_empty = random.random() < 0.50
+
+        if is_sec_empty:
+            sec_piece_boxes = []
+            sec_coord_style = random.choices(["none", "inner", "outer"], weights=[0.3, 0.5, 0.2])[0]
+            sec_board_img, sec_border_px = render_board_coordinates(
+                sec_board_raw, sec_tile_size, flipped=random.random() < 0.5, style=sec_coord_style
+            )
+        else:
+            sec_piece_set = random.choice(pieces_pool)
+            sec_fen = generate_fen(strategy="endgame", allow_flip=True)
+            sec_sprites = load_piece_sprites(sec_piece_set, sec_tile_size)
+            sec_board_img = apply_board_overlays(sec_board_raw, sec_fen, sec_tile_size)
+            sec_coord_style = random.choices(["none", "inner", "outer"], weights=[0.3, 0.5, 0.2])[0]
+            sec_board_img, sec_border_px = render_board_coordinates(
+                sec_board_img, sec_tile_size, flipped=random.random() < 0.5, style=sec_coord_style
+            )
+            sec_board_img, sec_piece_boxes = render_pieces_on_board(
+                sec_board_img, sec_sprites, sec_fen, sec_tile_size, border_offset=sec_border_px
+            )
+
+        canvas, scaled_boxes, board_boxes = compose_multi_board(
+            board_img,
+            piece_boxes,
+            border_px,
+            base_board_size,
+            sec_board_img,
+            sec_piece_boxes,
+            sec_border_px,
+            base_board_size,
+            canvas_size=canvas_size,
+        )
+        all_boxes = scaled_boxes + (board_boxes if make_board_label else [])
+
+    # Convert to YOLO format
+    yolo_labels = []
+    for cid, x1, y1, x2, y2 in all_boxes:
+        x1_c = max(0.0, min(float(canvas_size), float(x1)))
+        y1_c = max(0.0, min(float(canvas_size), float(y1)))
+        x2_c = max(0.0, min(float(canvas_size), float(x2)))
+        y2_c = max(0.0, min(float(canvas_size), float(y2)))
+        w_box = x2_c - x1_c
+        h_box = y2_c - y1_c
+        if w_box >= 3 and h_box >= 3:
+            xc = (x1_c + x2_c) / (2.0 * canvas_size)
+            yc = (y1_c + y2_c) / (2.0 * canvas_size)
+            w = w_box / float(canvas_size)
+            h = h_box / float(canvas_size)
             yolo_labels.append(yolo_label_str(cid, xc, yc, w, h))
 
     # 6. Apply photometric effects (color, contrast, blur, jpeg)
@@ -994,6 +1134,8 @@ def generate_split_dataset(
             make_board_label,
             images_dir,
             labels_dir,
+            pieces_list,
+            boards_list,
         ))
 
     workers = num_workers or max(1, multiprocessing.cpu_count())
