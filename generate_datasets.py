@@ -37,6 +37,12 @@ from random_fen_gen import generate_fen
 warnings.filterwarnings("ignore", category=UserWarning, module="PIL")
 
 # ==============================================================================
+# Custom Distortion Options
+# ==============================================================================
+ADD_DISTORTIONS = True
+PROBABILTY = 0.85  # Probability of applying custom board/piece distortions per image
+
+# ==============================================================================
 # Class Definitions & Label Mappings
 # ==============================================================================
 
@@ -174,7 +180,6 @@ def transform_box(box, M, img_w, img_h, min_size=5):
 
     transformed = M @ corners
     denom = transformed[2, :]
-    # Avoid division by zero
     denom = np.where(np.abs(denom) < 1e-7, 1e-7, denom)
     transformed /= denom
 
@@ -191,7 +196,6 @@ def transform_box(box, M, img_w, img_h, min_size=5):
     if w < min_size or h < min_size:
         return None
 
-    # Check that the box was not clipped away to nothingness
     orig_w = x2 - x1
     orig_h = y2 - y1
     if orig_w > 0 and orig_h > 0:
@@ -215,7 +219,6 @@ def yolo_label_str(class_id, xc, yc, w, h):
 # Piece & Board Loading with In-Memory Caching
 # ==============================================================================
 
-# Worker-local cache: piece_set_name -> {char: (Image, (local_x1, local_y1, local_x2, local_y2))}
 _PIECE_CACHE = {}
 
 
@@ -236,7 +239,6 @@ def load_piece_sprites(piece_set_name, tile_size):
             continue
         try:
             im = Image.open(path).convert("RGBA")
-            # Resize using high-quality Lanczos resampling
             im_resized = im.resize((tile_size, tile_size), Image.Resampling.LANCZOS)
             bbox = get_piece_tight_bbox(im_resized, DEFAULT_ALPHA_THRESHOLD)
             if bbox is None:
@@ -256,7 +258,6 @@ def load_raw_board(board_file, board_size):
         return Image.open(path).convert("RGB").resize((board_size, board_size), Image.Resampling.BICUBIC)
     except Exception as e:
         print(f"Warning: Failed loading board {path}: {e}")
-        # Fallback procedural checkerboard
         return generate_procedural_board(board_size)
 
 
@@ -280,30 +281,20 @@ def extract_tile_colors(raw_board_img, tile_size, border_px=0):
     """
     Extracts representative (R, G, B) colors for light and dark tiles
     from the raw checkerboard image.
-    Tile (col 0, row 0) is Light; Tile (col 1, row 0) is Dark.
-    Samples from the central 50% region of the squares.
-    `border_px` offsets sampling past an outer coordinate frame, if present.
     """
     arr = np.array(raw_board_img)
     pad = max(1, tile_size // 4)
     y1 = border_px + pad
     y2 = border_px + tile_size - pad
-    # Light square (col 0, row 0)
     light_crop = arr[y1:y2, border_px + pad : border_px + tile_size - pad]
     light_rgb = tuple(int(round(c)) for c in light_crop.mean(axis=(0, 1))[:3])
-    # Dark square (col 1, row 0)
     dark_crop = arr[y1:y2, border_px + tile_size + pad : border_px + 2 * tile_size - pad]
     dark_rgb = tuple(int(round(c)) for c in dark_crop.mean(axis=(0, 1))[:3])
     return light_rgb, dark_rgb
 
 
 def get_random_solid_background(light_color, dark_color):
-    """
-    Randomly selects between three solid background variations:
-    1. Background matching the light tile color
-    2. Background matching the dark tile color
-    3. A neutral grey background (128, 128, 128)
-    """
+    """Randomly selects between light tile color, dark tile color, or neutral grey background."""
     variant = random.choice(["light", "dark", "grey"])
     if variant == "light":
         return light_color
@@ -314,7 +305,7 @@ def get_random_solid_background(light_color, dark_color):
 
 
 # ==============================================================================
-# Realistic Visual Overlays: Highlights, Arrows, Coordinates
+# Intense Custom Distortions, Overlays, and Scratches
 # ==============================================================================
 
 HIGHLIGHT_COLORS = [
@@ -325,7 +316,86 @@ HIGHLIGHT_COLORS = [
     (250, 204, 21, 130),   # Warm Amber / Gold
 ]
 
-CHECK_COLOR = (235, 50, 50, 150)  # Red check highlight
+CHECK_COLOR = (235, 50, 50, 150)
+
+
+def apply_custom_distortions(img):
+    """
+    Applies INTENSE distortions, dense scratches, heavy glare streaks, high-contrast
+    lines, and partial occlusions directly on top of the final image.
+    Strictly modifies visual appearance without altering existing object labels/bboxes.
+    """
+    if not ADD_DISTORTIONS or random.random() > PROBABILTY:
+        return img
+
+    img = img.convert("RGBA")
+    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    w, h = img.size
+
+    # 1. High-Density Lines, Scratches, and Grid Artifacts
+    num_lines = random.randint(15, 45)
+    for _ in range(num_lines):
+        x1 = random.randint(0, w)
+        y1 = random.randint(0, h)
+        x2 = random.randint(0, w)
+        y2 = random.randint(0, h)
+        line_color = random.choice([
+            (255, 255, 255, random.randint(90, 220)),
+            (10, 10, 10, random.randint(80, 200)),
+            (255, 80, 80, random.randint(70, 180)),
+            (80, 180, 255, random.randint(70, 180)),
+            (255, 255, 100, random.randint(70, 180)),
+        ])
+        width = random.randint(1, 7)
+        draw.line([(x1, y1), (x2, y2)], fill=line_color, width=width)
+
+    # 2. Heavy Glare Strips & Bright Reflections
+    num_glares = random.randint(3, 8)
+    for _ in range(num_glares):
+        gx1 = random.randint(-w // 2, w)
+        gy1 = random.randint(-h // 2, h)
+        gw = random.randint(int(w * 0.4), int(w * 1.5))
+        gh = random.randint(int(h * 0.08), int(h * 0.40))
+
+        glare_img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        g_draw = ImageDraw.Draw(glare_img)
+        g_color = random.choice([
+            (255, 255, 255, random.randint(40, 130)),
+            (230, 240, 255, random.randint(50, 140)),
+            (255, 245, 200, random.randint(45, 120)),
+        ])
+        g_draw.ellipse([gx1, gy1, gx1 + gw, gy1 + gh], fill=g_color)
+        angle = random.uniform(-60, 60)
+        glare_img = glare_img.rotate(angle, resample=Image.Resampling.BICUBIC, center=(gx1 + gw // 2, gy1 + gh // 2))
+        overlay = Image.alpha_composite(overlay, glare_img)
+
+    # 3. Dense Patchy Occlusions & Synthetic Artifact Blocks
+    num_patches = random.randint(6, 18)
+    for _ in range(num_patches):
+        px = random.randint(0, w - 20)
+        py = random.randint(0, h - 20)
+        pw = random.randint(20, 110)
+        ph = random.randint(20, 110)
+        patch_color = random.choice([
+            (255, 255, 255, random.randint(35, 110)),
+            (15, 15, 15, random.randint(40, 120)),
+            (120, 120, 120, random.randint(40, 100)),
+        ])
+        if random.random() < 0.5:
+            draw.rectangle([px, py, px + pw, py + ph], fill=patch_color)
+        else:
+            draw.ellipse([px, py, px + pw, py + ph], fill=patch_color)
+
+    # 4. Salt-and-Pepper Grain/Noise Overlay
+    if random.random() < 0.70:
+        np_arr = np.array(overlay)
+        noise_mask = np.random.rand(h, w) < random.uniform(0.03, 0.08)
+        np_arr[noise_mask, :3] = np.random.choice([0, 255], size=(np.count_nonzero(noise_mask), 3))
+        np_arr[noise_mask, 3] = np.random.randint(100, 220, size=np.count_nonzero(noise_mask))
+        overlay = Image.fromarray(np_arr)
+
+    return Image.alpha_composite(img, overlay).convert("RGB")
 
 
 def draw_arrow(overlay_draw, p1, p2, color=(40, 180, 80, 175), width=8, head_size=22):
@@ -344,9 +414,7 @@ def draw_arrow(overlay_draw, p1, p2, color=(40, 180, 80, 175), width=8, head_siz
 
     xs, ys = x2 - ux * h, y2 - uy * h
 
-    # Arrow shaft line
     overlay_draw.line([(x1, y1), (xs, ys)], fill=color, width=width)
-    # Triangular arrow head
     pt1 = (x2, y2)
     pt2 = (xs + nx * w, ys + ny * w)
     pt3 = (xs - nx * w, ys - ny * w)
@@ -354,17 +422,10 @@ def draw_arrow(overlay_draw, p1, p2, color=(40, 180, 80, 175), width=8, head_siz
 
 
 def apply_board_overlays(board_img, fen, tile_size, flipped=False):
-    """
-    Adds realistic visual UI elements to the board:
-    - Last move highlights (from_sq, to_sq)
-    - Checked king red highlight
-    - Legal move dots and capture rings
-    - Analysis arrows
-    """
+    """Adds move highlights, check indicators, legal dots, and arrows to the board."""
     overlay = Image.new("RGBA", board_img.size, (0, 0, 0, 0))
     ov_draw = ImageDraw.Draw(overlay)
 
-    # Collect occupied squares: map (col, row) -> char
     occupied = {}
     kings = {}
     for r_idx, rank in enumerate(fen.split()[0].split("/")):
@@ -378,12 +439,9 @@ def apply_board_overlays(board_img, fen, tile_size, flipped=False):
                     kings[char] = (c_idx, r_idx)
                 c_idx += 1
 
-    # 1. Last move square highlights (45% chance)
     if random.random() < 0.45 and occupied:
         hl_color = random.choice(HIGHLIGHT_COLORS)
-        # Pick a random occupied piece as the destination square
         to_pos = random.choice(list(occupied.keys()))
-        # Pick an adjacent or related square as the origin square
         c, r = to_pos
         deltas = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1), (-1, 1), (1, -1), (1, 2), (-1, 2)]
         from_candidates = [(c + dc, r + dr) for dc, dr in deltas if 0 <= c + dc < 8 and 0 <= r + dr < 8]
@@ -393,14 +451,12 @@ def apply_board_overlays(board_img, fen, tile_size, flipped=False):
             x1, y1 = col * tile_size, row * tile_size
             ov_draw.rectangle([x1, y1, x1 + tile_size, y1 + tile_size], fill=hl_color)
 
-    # 2. King in check highlight (15% chance)
     if random.random() < 0.15 and kings:
         checked_king = random.choice(list(kings.values()))
         kc, kr = checked_king
         kx1, ky1 = kc * tile_size, kr * tile_size
         ov_draw.rectangle([kx1, ky1, kx1 + tile_size, ky1 + tile_size], fill=CHECK_COLOR)
 
-    # 3. Legal move dots & capture rings (55% chance)
     if random.random() < 0.55:
         empty_squares = [(c, r) for c in range(8) for r in range(8) if (c, r) not in occupied]
         if empty_squares:
@@ -416,7 +472,6 @@ def apply_board_overlays(board_img, fen, tile_size, flipped=False):
                 cy = r * tile_size + tile_size // 2
                 ov_draw.ellipse([cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r], fill=dot_color)
 
-        # Target capture ring on enemy piece (1 to 3 rings)
         if occupied and random.random() < 0.65:
             num_rings = min(random.randint(1, 3), len(occupied))
             for tc, tr in random.sample(list(occupied.keys()), num_rings):
@@ -434,15 +489,14 @@ def apply_board_overlays(board_img, fen, tile_size, flipped=False):
                     width=max(3, int(tile_size * 0.045)),
                 )
 
-    # 4. Analysis arrows (60% chance)
     if random.random() < 0.60:
         num_arrows = random.choices([1, 2, 3], weights=[0.45, 0.35, 0.20])[0]
         used_pairs = set()
         arrow_palette = [
-            (40, 180, 80, 185),   # Engine Best: Green
-            (59, 130, 246, 185),  # 2nd Best: Blue
-            (245, 140, 30, 185),  # 3rd Best: Orange
-            (239, 68, 68, 185),   # Threat/Blunder: Red
+            (40, 180, 80, 185),
+            (59, 130, 246, 185),
+            (245, 140, 30, 185),
+            (239, 68, 68, 185),
         ]
         for a_idx in range(num_arrows):
             if occupied and random.random() < 0.80:
@@ -468,12 +522,7 @@ def apply_board_overlays(board_img, fen, tile_size, flipped=False):
 
 
 def render_board_coordinates(board_img, tile_size, flipped=False, style="inner", frame_color=(45, 42, 38)):
-    """
-    Renders standard rank ('1'-'8') and file ('a'-'h') coordinate labels.
-    - 'inner': Drawn in corners of border tiles (Chess.com / Lichess modern style)
-    - 'outer': Border frame with centered letters and numbers
-    `frame_color` matches the solid background so no visible boundary is added.
-    """
+    """Renders rank and file coordinates on inner tile margins or outer frames."""
     font = get_default_font(size=max(10, int(tile_size * 0.16)))
 
     if style == "inner":
@@ -485,17 +534,15 @@ def render_board_coordinates(board_img, tile_size, flipped=False, style="inner",
             for row in range(8):
                 is_light = (row + col) % 2 == 0
                 text_color = (130, 95, 65) if is_light else (225, 210, 195)
-                # File letter on bottom rank (row 7)
                 if row == 7:
                     x = (col + 1) * tile_size - int(tile_size * 0.18)
                     y = (row + 1) * tile_size - int(tile_size * 0.22)
                     draw.text((x, y), files[col], fill=text_color, font=font)
-                # Rank number on left file (col 0)
                 if col == 0:
                     x = col * tile_size + int(tile_size * 0.05)
                     y = row * tile_size + int(tile_size * 0.05)
                     draw.text((x, y), ranks[row], fill=text_color, font=font)
-        return board_img, 0  # 0 border added
+        return board_img, 0
 
     elif style == "outer":
         border_px = max(16, int(tile_size * 0.25))
@@ -509,10 +556,8 @@ def render_board_coordinates(board_img, tile_size, flipped=False, style="inner",
 
         for idx in range(8):
             center_pos = border_px + idx * tile_size + tile_size // 2 - 4
-            # Top and bottom file letters
             draw.text((center_pos, border_px // 2 - 6), files[idx], fill=(180, 180, 180), font=font)
             draw.text((center_pos, new_size - border_px + 2), files[idx], fill=(180, 180, 180), font=font)
-            # Left and right rank numbers
             draw.text((border_px // 2 - 4, center_pos), ranks[idx], fill=(180, 180, 180), font=font)
             draw.text((new_size - border_px + 4, center_pos), ranks[idx], fill=(180, 180, 180), font=font)
         return framed, border_px
@@ -525,11 +570,7 @@ def render_board_coordinates(board_img, tile_size, flipped=False, style="inner",
 # ==============================================================================
 
 def render_pieces_on_board(board_img, piece_sprites, fen, tile_size, border_offset=0):
-    """
-    Places chess pieces from FEN onto the board image.
-    Calculates exact tight bounding boxes (class_id, x1, y1, x2, y2)
-    in board image pixel coordinates.
-    """
+    """Places chess pieces from FEN onto the board image and calculates exact bounding boxes."""
     piece_boxes = []
 
     for r_idx, rank in enumerate(fen.split()[0].split("/")):
@@ -542,15 +583,12 @@ def render_pieces_on_board(board_img, piece_sprites, fen, tile_size, border_offs
                     class_id = FEN_TO_PIECE_ID[char]
                     sprite, (lx1, ly1, lx2, ly2) = piece_sprites[char]
 
-                    # Tile base coordinates
                     base_x = border_offset + c_idx * tile_size
                     base_y = border_offset + r_idx * tile_size
 
-                    # Subtle natural placement jitter (+/- 1-2 pixels)
                     jx = random.randint(-2, 2)
                     jy = random.randint(-2, 2)
 
-                    # Subtle piece scaling variation (93% - 103%)
                     piece_to_paste = sprite
                     bx1, by1, bx2, by2 = lx1, ly1, lx2, ly2
 
@@ -559,11 +597,9 @@ def render_pieces_on_board(board_img, piece_sprites, fen, tile_size, border_offs
                         nw = max(10, int(tile_size * scale))
                         nh = max(10, int(tile_size * scale))
                         piece_to_paste = sprite.resize((nw, nh), Image.Resampling.LANCZOS)
-                        # Recompute tight bbox for scaled piece
                         tb = get_piece_tight_bbox(piece_to_paste, DEFAULT_ALPHA_THRESHOLD)
                         if tb:
                             bx1, by1, bx2, by2 = tb
-                        # Align bottom baseline
                         off_x = (tile_size - nw) // 2
                         off_y = tile_size - nh
                         paste_x = base_x + off_x + jx
@@ -572,10 +608,8 @@ def render_pieces_on_board(board_img, piece_sprites, fen, tile_size, border_offs
                         paste_x = base_x + jx
                         paste_y = base_y + jy
 
-                    # Paste with alpha channel as mask
                     board_img.paste(piece_to_paste, (paste_x, paste_y), piece_to_paste)
 
-                    # Compute exact board-level coordinates
                     abs_x1 = max(0, paste_x + bx1)
                     abs_y1 = max(0, paste_y + by1)
                     abs_x2 = min(board_img.width, paste_x + bx2)
@@ -594,25 +628,23 @@ def render_pieces_on_board(board_img, piece_sprites, fen, tile_size, border_offs
 # ==============================================================================
 
 UI_THEME_COLORS = [
-    # Dark mode variants
     {"bg": (38, 36, 33), "card": (49, 46, 43), "text": (220, 220, 220), "accent": (129, 182, 76)},
     {"bg": (22, 21, 18), "card": (30, 29, 26), "text": (210, 210, 210), "accent": (86, 120, 68)},
     {"bg": (48, 46, 43), "card": (60, 58, 55), "text": (240, 240, 240), "accent": (135, 158, 90)},
     {"bg": (26, 26, 26), "card": (36, 36, 36), "text": (230, 230, 230), "accent": (59, 130, 246)},
-    # Light mode variants
     {"bg": (240, 240, 240), "card": (255, 255, 255), "text": (40, 40, 40), "accent": (74, 144, 226)},
     {"bg": (248, 249, 250), "card": (255, 255, 255), "text": (33, 37, 41), "accent": (118, 150, 86)},
 ]
 
 UI_ACCENT_COLORS = [
-    (59, 130, 246),   # blue
-    (34, 197, 94),    # green
-    (239, 68, 68),    # red
-    (234, 179, 8),    # amber
-    (168, 85, 247),   # purple
-    (6, 182, 212),    # cyan
-    (249, 115, 22),   # orange
-    (236, 72, 153),   # pink
+    (59, 130, 246),
+    (34, 197, 94),
+    (239, 68, 68),
+    (234, 179, 8),
+    (168, 85, 247),
+    (6, 182, 212),
+    (249, 115, 22),
+    (236, 72, 153),
 ]
 
 UI_CLUTTER_WORDS = [
@@ -627,14 +659,7 @@ UI_CLUTTER_WORDS = [
 
 
 def draw_random_ui_clutter(canvas, canvas_size, exclude_rects=None, theme=None):
-    """
-    Draws randomized UI-like distractor elements on the background.
-
-    This is called before the chessboard is pasted, so clutter never occludes
-    pieces or corrupts labels. Elements are intentionally varied in type, size,
-    opacity, and placement: cards, windows, toolbars, sidebars, chat bubbles,
-    charts, buttons, toggles, clocks, progress bars, tabs, and text blocks.
-    """
+    """Draws randomized UI-like distractor elements on the background."""
     if theme is None:
         theme = random.choice(UI_THEME_COLORS)
 
@@ -993,12 +1018,7 @@ def compose_full_board(
     canvas_size=DEFAULT_IMAGE_SIZE,
     bg_color=None,
 ):
-    """
-    Composition 1: Full-board view.
-    Board fills 85-98% of the canvas. Center-aligned with subtle background padding.
-    The background is randomly matched to a light tile, dark tile, or neutral grey.
-    The chess_board bounding box strictly bounds the 64 checkerboard squares.
-    """
+    """Composition 1: Full-board view."""
     if bg_color is None:
         light_color, dark_color = extract_tile_colors(
             board_img, base_board_size // 8, border_px=border_px
@@ -1008,7 +1028,6 @@ def compose_full_board(
     canvas = Image.new("RGB", (canvas_size, canvas_size), bg_color)
     bw, bh = board_img.size
 
-    # Fit within canvas
     scale = min((canvas_size - 10) / bw, (canvas_size - 10) / bh)
     new_w = int(bw * scale)
     new_h = int(bh * scale)
@@ -1018,14 +1037,12 @@ def compose_full_board(
     oy = (canvas_size - new_h) // 2
     canvas.paste(resized_board, (ox, oy))
 
-    # Scale piece boxes
     scaled_boxes = []
     sx = new_w / bw
     sy = new_h / bh
     for cid, x1, y1, x2, y2 in piece_boxes:
         scaled_boxes.append((cid, ox + x1 * sx, oy + y1 * sy, ox + x2 * sx, oy + y2 * sy))
 
-    # Bounding box strictly for the 64 checkerboard squares (excluding outer coordinate borders)
     chk_x1 = ox + border_px * sx
     chk_y1 = oy + border_px * sy
     chk_x2 = ox + (border_px + base_board_size) * sx
@@ -1037,25 +1054,18 @@ def compose_full_board(
 def compose_web_ui(
     board_img, piece_boxes, border_px=0, base_board_size=DEFAULT_BOARD_SIZE, canvas_size=DEFAULT_IMAGE_SIZE
 ):
-    """
-    Composition 2: Realistic Web / Desktop Chess Interface.
-    Simulates Chess.com or Lichess with eval bar, player names, clocks, and sidebar.
-    The chess_board bounding box strictly bounds the 64 checkerboard squares.
-    """
+    """Composition 2: Realistic Web / Desktop Chess Interface."""
     theme = random.choice(UI_THEME_COLORS)
     canvas = Image.new("RGB", (canvas_size, canvas_size), theme["bg"])
     font = get_default_font(size=12)
 
-    # Board size occupies 55% - 72% of canvas height
     target_board_size = random.randint(int(canvas_size * 0.55), int(canvas_size * 0.72))
     bw, bh = board_img.size
     resized_board = board_img.resize((target_board_size, target_board_size), Image.Resampling.LANCZOS)
 
-    # Position board slightly to the left to leave room for sidebar/eval bar
     board_ox = random.randint(40, max(42, canvas_size - target_board_size - 30))
     board_oy = (canvas_size - target_board_size) // 2
 
-    # Add random UI clutter to the background before the board is pasted.
     canvas = draw_random_ui_clutter(
         canvas,
         canvas_size,
@@ -1065,13 +1075,11 @@ def compose_web_ui(
     canvas.paste(resized_board, (board_ox, board_oy))
     draw = ImageDraw.Draw(canvas)
 
-    # 1. Vertical Evaluation Bar on the left of the board
     eval_w = max(10, int(target_board_size * 0.035))
     eval_x = board_ox - eval_w - 6
     if eval_x >= 4:
         draw.rectangle([eval_x, board_oy, eval_x + eval_w, board_oy + target_board_size], fill=(35, 35, 35))
         eval_score = random.uniform(-3.5, 3.5)
-        # Sigmoid height mapping
         white_ratio = 1.0 / (1.0 + math.exp(-eval_score / 2.5))
         white_h = int(target_board_size * white_ratio)
         draw.rectangle(
@@ -1079,14 +1087,11 @@ def compose_web_ui(
             fill=(245, 245, 245),
         )
 
-    # 2. Player Info Cards (Top and Bottom)
     top_y = board_oy - 28
     bot_y = board_oy + target_board_size + 6
     if top_y >= 4 and bot_y + 24 <= canvas_size:
-        # Opponent card (top)
         draw.rectangle([board_ox, top_y, board_ox + 22, top_y + 22], fill=theme["card"])
         draw.text((board_ox + 28, top_y + 4), "Opponent (1850)", fill=theme["text"], font=font)
-        # Top clock
         draw.rounded_rectangle(
             [board_ox + target_board_size - 56, top_y, board_ox + target_board_size, top_y + 22],
             radius=3,
@@ -1094,10 +1099,8 @@ def compose_web_ui(
         )
         draw.text((board_ox + target_board_size - 50, top_y + 4), "04:52", fill=(255, 255, 255), font=font)
 
-        # Player card (bottom)
         draw.rectangle([board_ox, bot_y, board_ox + 22, bot_y + 22], fill=theme["card"])
         draw.text((board_ox + 28, bot_y + 4), "Player (1920)", fill=theme["text"], font=font)
-        # Bottom clock
         draw.rounded_rectangle(
             [board_ox + target_board_size - 56, bot_y, board_ox + target_board_size, bot_y + 22],
             radius=3,
@@ -1105,14 +1108,12 @@ def compose_web_ui(
         )
         draw.text((board_ox + target_board_size - 50, bot_y + 4), "03:18", fill=(255, 255, 255), font=font)
 
-    # Scale piece boxes
     scaled_boxes = []
     sx = target_board_size / bw
     sy = target_board_size / bh
     for cid, x1, y1, x2, y2 in piece_boxes:
         scaled_boxes.append((cid, board_ox + x1 * sx, board_oy + y1 * sy, board_ox + x2 * sx, board_oy + y2 * sy))
 
-    # Bounding box strictly for the 64 checkerboard squares (excluding outer coordinate borders)
     chk_x1 = board_ox + border_px * sx
     chk_y1 = board_oy + border_px * sy
     chk_x2 = board_ox + (border_px + base_board_size) * sx
@@ -1122,16 +1123,10 @@ def compose_web_ui(
 
 
 def get_embedded_board_size(canvas_size):
-    """
-    Chooses a medium/small embedded board size as a fraction of the canvas.
-    The old fixed 80-100 px range made pieces only ~8 px at 640 px, which is
-    too small to label and learn reliably. This keeps the board embedded while
-    giving pieces enough pixels to supervise.
-    """
+    """Chooses a medium/small embedded board size as a fraction of the canvas."""
     min_size = max(120, int(round(canvas_size * 0.19)))
     max_size = int(round(canvas_size * 0.62))
 
-    # Keep the board inside the canvas for unusually small resolutions.
     min_size = min(min_size, canvas_size - 8)
     max_size = min(max_size, canvas_size - 4)
     max_size = max(max_size, min_size + 1)
@@ -1149,14 +1144,7 @@ def compose_embedded_board(
     bg_file=None,
     canvas_size=DEFAULT_IMAGE_SIZE,
 ):
-    """
-    Composition 3: Small or embedded board on realistic photographic background.
-    Tests detection robustness on small chessboards and cluttered scenes (STAL).
-
-    The board occupies roughly 19-62% of the canvas (about 120-400 px at 640),
-    instead of the previous fixed 80-100 px which produced unlearnably tiny pieces.
-    The chess_board bounding box strictly bounds the 64 checkerboard squares.
-    """
+    """Composition 3: Small or embedded board on realistic photographic background."""
     canvas = None
     if bg_file:
         candidate = bg_file if os.path.isabs(bg_file) else os.path.join(BACKGROUND_NOISE_DIR, bg_file)
@@ -1172,7 +1160,6 @@ def compose_embedded_board(
     if canvas is None:
         canvas = Image.new("RGB", (canvas_size, canvas_size), (45, 42, 38))
 
-    # Medium/small embedded board: larger than the old 80-100 px range.
     target_board_size = get_embedded_board_size(canvas_size)
     bw, bh = board_img.size
     resized_board = board_img.resize((target_board_size, target_board_size), Image.Resampling.LANCZOS)
@@ -1182,8 +1169,6 @@ def compose_embedded_board(
     ox = random.randint(0, max_x)
     oy = random.randint(0, max_y)
 
-    # Add random UI clutter over the photo/texture background before pasting
-    # the board, so it acts as a distractor without occluding any labels.
     canvas = draw_random_ui_clutter(
         canvas,
         canvas_size,
@@ -1198,7 +1183,6 @@ def compose_embedded_board(
     for cid, x1, y1, x2, y2 in piece_boxes:
         scaled_boxes.append((cid, ox + x1 * sx, oy + y1 * sy, ox + x2 * sx, oy + y2 * sy))
 
-    # Bounding box strictly for the 64 checkerboard squares (excluding outer coordinate borders)
     chk_x1 = ox + border_px * sx
     chk_y1 = oy + border_px * sy
     chk_x2 = ox + (border_px + base_board_size) * sx
@@ -1218,29 +1202,19 @@ def compose_multi_board(
     sec_base_size,
     canvas_size=DEFAULT_IMAGE_SIZE,
 ):
-    """
-    Composition 4: Realistic Multi-Board Tournament / Analysis Broadcast View.
-    Contains:
-    - Primary active game board (54-62% canvas height/width)
-    - Secondary variation or thumbnail board (28-34% canvas), either empty or with pieces
-    - Broadcast top ribbon and sidebar container cards
-    Both boards receive exact 64-square chess_board bounding boxes (excluding outer coordinate borders).
-    """
+    """Composition 4: Realistic Multi-Board Tournament / Analysis Broadcast View."""
     theme = random.choice(UI_THEME_COLORS)
     canvas = Image.new("RGB", (canvas_size, canvas_size), theme["bg"])
 
-    # Add randomized UI clutter behind the broadcast layout.
     canvas = draw_random_ui_clutter(canvas, canvas_size, theme=theme)
     draw = ImageDraw.Draw(canvas)
     font = get_default_font(size=11)
 
-    # Top header bar (stream / tournament broadcast ribbon)
     header_h = 34
     draw.rectangle([0, 0, canvas_size, header_h], fill=theme["card"])
     draw.text((16, 10), "CHESS TOURNAMENT BROADCAST • LIVE", fill=theme["text"], font=font)
     draw.text((canvas_size - 80, 10), "MATCH #1", fill=theme["accent"], font=font)
 
-    # 1. Main board: 54% - 62% of canvas (tile size 42-50 px)
     main_size = random.randint(int(canvas_size * 0.54), int(canvas_size * 0.62))
     bw1, bh1 = main_board_img.size
     resized_main = main_board_img.resize((main_size, main_size), Image.Resampling.LANCZOS)
@@ -1248,21 +1222,18 @@ def compose_multi_board(
     main_oy = header_h + 12 + (canvas_size - header_h - 12 - main_size) // 2
     canvas.paste(resized_main, (main_ox, main_oy))
 
-    # Scale main pieces
     sx1 = main_size / bw1
     sy1 = main_size / bh1
     scaled_boxes = []
     for cid, x1, y1, x2, y2 in main_piece_boxes:
         scaled_boxes.append((cid, main_ox + x1 * sx1, main_oy + y1 * sy1, main_ox + x2 * sx1, main_oy + y2 * sy1))
 
-    # Main board box (strictly 64 checkerboard squares)
     m_chk_x1 = main_ox + main_border_px * sx1
     m_chk_y1 = main_oy + main_border_px * sy1
     m_chk_x2 = main_ox + (main_border_px + main_base_size) * sx1
     m_chk_y2 = main_oy + (main_border_px + main_base_size) * sy1
     main_board_box = (12, m_chk_x1, m_chk_y1, m_chk_x2, m_chk_y2)
 
-    # 2. Secondary board in right sidebar: 28% - 34% of canvas (tile size ~23-27 px)
     sec_max_w = canvas_size - (main_ox + main_size) - 24
     sec_size = min(int(canvas_size * 0.33), sec_max_w)
     if sec_size < 160:
@@ -1272,7 +1243,6 @@ def compose_multi_board(
     sec_ox = canvas_size - sec_size - 14
     sec_oy = main_oy + (main_size - sec_size) // 2
 
-    # Draw container card for secondary board
     card_pad = 6
     draw.rounded_rectangle(
         [sec_ox - card_pad, sec_oy - 22, sec_ox + sec_size + card_pad, sec_oy + sec_size + card_pad],
@@ -1283,13 +1253,11 @@ def compose_multi_board(
     draw.text((sec_ox, sec_oy - 18), card_title, fill=theme["text"], font=font)
     canvas.paste(resized_sec, (sec_ox, sec_oy))
 
-    # Scale secondary pieces (if any)
     sx2 = sec_size / bw2
     sy2 = sec_size / bh2
     for cid, x1, y1, x2, y2 in sec_piece_boxes:
         scaled_boxes.append((cid, sec_ox + x1 * sx2, sec_oy + y1 * sy2, sec_ox + x2 * sx2, sec_oy + y2 * sy2))
 
-    # Secondary board box (strictly 64 checkerboard squares)
     s_chk_x1 = sec_ox + sec_border_px * sx2
     s_chk_y1 = sec_oy + sec_border_px * sy2
     s_chk_x2 = sec_ox + (sec_border_px + sec_base_size) * sx2
@@ -1303,54 +1271,19 @@ def compose_multi_board(
 # Photometric / Sensor Augmentations
 # ==============================================================================
 
-def apply_screen_moire(img, strength=3.5):
-    """Adds subtle periodic LCD subpixel grid pattern simulating screen photos."""
-    arr = np.array(img, dtype=np.float32)
-    h, w = arr.shape[:2]
-    freq = random.uniform(0.35, 0.55)
-    y = np.arange(h).reshape(-1, 1)
-    x = np.arange(w).reshape(1, -1)
-    pattern = (np.sin(x * freq) + np.sin(y * freq)) * (strength / 2.0)
-    arr = np.clip(arr + pattern[:, :, np.newaxis], 0, 255).astype(np.uint8)
-    return Image.fromarray(arr)
-
-
-def apply_vignette(img, strength=0.30):
-    """Applies radial brightness falloff towards corners."""
-    arr = np.array(img, dtype=np.float32)
-    h, w = arr.shape[:2]
-    y = np.linspace(-1, 1, h).reshape(-1, 1)
-    x = np.linspace(-1, 1, w).reshape(1, -1)
-    dist_sq = x ** 2 + y ** 2
-    vignette = 1.0 - (strength * 0.5 * dist_sq)
-    vignette = np.clip(vignette, 0.0, 1.0)[:, :, np.newaxis]
-    arr = np.clip(arr * vignette, 0, 255).astype(np.uint8)
-    return Image.fromarray(arr)
-
-
 def apply_photometric_effects(img):
-    """
-    Applies realistic camera / stream artifacts without altering geometry:
-    - Brightness, Contrast, Saturation adjustments
-    - Resolution downsampling / upsampling (simulating 360p/480p streams)
-    - Defocus / Gaussian blur
-    - JPEG compression artifacts
-    """
+    """Applies realistic brightness, contrast, color, downsampling, blur, and JPEG artifacts."""
     img = img.convert("RGB")
 
-    # Brightness (0.80 - 1.20)
     if random.random() < 0.40:
-        img = ImageEnhance.Brightness(img).enhance(random.uniform(0.80, 1.20))
+        img = ImageEnhance.Brightness(img).enhance(random.uniform(0.75, 1.25))
 
-    # Contrast (0.80 - 1.20)
     if random.random() < 0.40:
-        img = ImageEnhance.Contrast(img).enhance(random.uniform(0.80, 1.20))
+        img = ImageEnhance.Contrast(img).enhance(random.uniform(0.75, 1.25))
 
-    # Saturation (0.75 - 1.25)
     if random.random() < 0.35:
-        img = ImageEnhance.Color(img).enhance(random.uniform(0.75, 1.25))
+        img = ImageEnhance.Color(img).enhance(random.uniform(0.70, 1.30))
 
-    # Video stream downsampling / upsampling (simulate low-bandwidth streams)
     if random.random() < 0.25:
         w, h = img.size
         scale = random.uniform(0.50, 0.85)
@@ -1358,13 +1291,11 @@ def apply_photometric_effects(img):
         img = img.resize((sw, sh), Image.Resampling.BILINEAR)
         img = img.resize((w, h), Image.Resampling.BICUBIC)
 
-    # Slight blur (out-of-focus or motion blur)
     if random.random() < 0.20:
         img = img.filter(ImageFilter.GaussianBlur(radius=random.uniform(0.3, 0.9)))
 
-    # JPEG compression artifacts
     if random.random() < 0.45:
-        quality = random.randint(45, 90)
+        quality = random.randint(40, 85)
         buffer = BytesIO()
         img.save(buffer, format="JPEG", quality=quality, optimize=True)
         buffer.seek(0)
@@ -1379,13 +1310,7 @@ def apply_photometric_effects(img):
 # ==============================================================================
 
 def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio=0.15, holdout_assets=True):
-    """
-    Deterministically partitions available boards, piece sets, and background noise
-    into disjoint Train, Validation, and Test subsets with ZERO data leakage.
-
-    If `holdout_assets` is False, no partition is performed: every piece set,
-    board, and background is assigned to Train, leaving Val/Test empty.
-    """
+    """Deterministically partitions available boards, piece sets, and background noise."""
     rng = random.Random(seed)
 
     all_pieces = sorted(os.listdir(PIECES_DIR))
@@ -1414,8 +1339,6 @@ def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio
         val_boards = []
         test_boards = []
 
-    # Discover available background images. Textures are intentionally not used
-    # as backgrounds here: they are reserved for board generation.
     all_bgs = []
     if os.path.exists(BACKGROUND_NOISE_DIR):
         all_bgs.extend([f for f in os.listdir(BACKGROUND_NOISE_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
@@ -1465,42 +1388,29 @@ def _generate_single_sample_once(
     boards_pool,
     min_piece_px=DEFAULT_MIN_PIECE_PX,
 ):
-    """
-    Builds one sample and saves it. Returns False if a piece is below
-    `min_piece_px`, so the caller can redraw with a different deterministic seed.
-    """
-    # Deterministic position generation
+    """Builds one sample and saves it."""
     fen = generate_fen(strategy="auto", allow_flip=True)
     flipped = random.random() < 0.50
 
-    # 1. Load board & piece sprites
     tile_size = base_board_size // 8
     board_img = load_raw_board(board_file, base_board_size)
     light_tile_color, dark_tile_color = extract_tile_colors(board_img, tile_size)
     piece_sprites = load_piece_sprites(piece_set_name, tile_size)
 
-    # 2. Apply realistic move highlights, arrows, dots
     board_img = apply_board_overlays(board_img, fen, tile_size, flipped=flipped)
 
-    # 3. Choose Composition Environment (Clean 2D digital screen compositions only)
-    # Bias toward embedded boards on real background photos; keep clean solid
-    # backgrounds rare.
     comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.05, 0.30, 0.40, 0.25])[0]
 
-    # 4. Solid tile-matched background for clean full-board views only.
-    # Other compositions keep their photographic / themed backgrounds.
     if comp_type == "full":
         bg_color = get_random_solid_background(light_tile_color, dark_tile_color)
     else:
         bg_color = (45, 42, 38)
 
-    # 5. Add coordinates / border (outer frame blends into the full-board background)
     coord_style = random.choices(["none", "inner", "outer"], weights=[0.25, 0.50, 0.25])[0]
     board_img, border_px = render_board_coordinates(
         board_img, tile_size, flipped=flipped, style=coord_style, frame_color=bg_color
     )
 
-    # 6. Render pieces and get tight bounding boxes
     board_img, piece_boxes = render_pieces_on_board(
         board_img, piece_sprites, fen, tile_size, border_offset=border_px
     )
@@ -1537,7 +1447,7 @@ def _generate_single_sample_once(
         )
         all_boxes = scaled_boxes + ([board_box] if make_board_label else [])
 
-    else:  # "multi" - Multi-board tournament / analysis broadcast view
+    else:
         sec_board_file = random.choice(boards_pool)
         sec_tile_size = base_board_size // 8
         sec_board_raw = load_raw_board(sec_board_file, base_board_size)
@@ -1575,11 +1485,9 @@ def _generate_single_sample_once(
         )
         all_boxes = scaled_boxes + (board_boxes if make_board_label else [])
 
-    # Reject samples where any piece is too small to supervise reliably.
-    # This mainly protects against embedded/multi-board compositions.
     if min_piece_px > 0:
         for cid, x1, y1, x2, y2 in all_boxes:
-            if cid == 12:  # chess_board
+            if cid == 12:
                 continue
             x1_c = max(0.0, min(float(canvas_size), float(x1)))
             y1_c = max(0.0, min(float(canvas_size), float(y1)))
@@ -1588,7 +1496,6 @@ def _generate_single_sample_once(
             if (x2_c - x1_c) < min_piece_px or (y2_c - y1_c) < min_piece_px:
                 return False
 
-    # Convert to YOLO format
     yolo_labels = []
     for cid, x1, y1, x2, y2 in all_boxes:
         x1_c = max(0.0, min(float(canvas_size), float(x1)))
@@ -1604,10 +1511,9 @@ def _generate_single_sample_once(
             h = h_box / float(canvas_size)
             yolo_labels.append(yolo_label_str(cid, xc, yc, w, h))
 
-    # 6. Apply photometric effects (color, contrast, blur, jpeg)
     canvas = apply_photometric_effects(canvas)
+    canvas = apply_custom_distortions(canvas)
 
-    # 7. Save image and label file
     img_path = os.path.join(images_dir, f"{img_id}.jpg")
     lbl_path = os.path.join(labels_dir, f"{img_id}.txt")
 
@@ -1619,15 +1525,7 @@ def _generate_single_sample_once(
 
 
 def generate_single_sample(args):
-    """
-    Worker entry point for one sample.
-
-    The task carries its own deterministic seed, so the same dataset seed
-    reproduces identical images/labels regardless of worker count or scheduling.
-    Samples that contain pieces below `min_piece_px` are redrawn with a new
-    deterministic attempt seed. The final attempt always accepts the sample so
-    the requested dataset count is preserved.
-    """
+    """Worker entry point for one sample."""
     (
         img_id,
         split_name,
@@ -1703,8 +1601,6 @@ def generate_split_dataset(
     if not pieces_list or not boards_list or not bgs_list:
         raise ValueError(f"Empty asset partition for split {split_name}!")
 
-    # Per-split RNG so train/val/test task lists stay reproducible independently
-    # of generation order and counts in the other splits.
     task_rng = random.Random(f"{seed}:{split_name}:assets")
 
     tasks = []
@@ -1737,7 +1633,6 @@ def generate_split_dataset(
     print(f"Generating {count} samples for [{split_name}] using {workers} worker processes...")
 
     with multiprocessing.Pool(processes=workers) as pool:
-        # Use imap_unordered with chunksize for fast multiprocessing
         chunk = max(1, count // (workers * 4))
         completed = 0
         for _ in pool.imap_unordered(generate_single_sample, tasks, chunksize=chunk):
@@ -1790,14 +1685,12 @@ def main():
     print(f"Target counts: Train={args.train_count}, Val={args.val_count}, Test={args.test_count}")
     print(f"Output Resolution: {args.imgsz}x{args.imgsz} | Random Seed: {args.seed}")
     print(f"Output Directory: {args.out_dir}")
+    print(f"Custom Distortions Enabled: {ADD_DISTORTIONS} (Probability: {PROBABILTY})")
 
     if args.clean and os.path.exists(args.out_dir):
         print(f"Cleaning existing directory: {args.out_dir}")
         shutil.rmtree(args.out_dir)
 
-    # 1. Partition assets deterministically with zero data leakage.
-    # When no validation or test samples are requested, skip the split entirely
-    # so every piece set and board is used for training.
     holdout_assets = args.val_count > 0 or args.test_count > 0
     partitions = split_assets(seed=args.seed, holdout_assets=holdout_assets)
     print("\nDeterministic Asset Partitioning (Zero Data Leakage):")
@@ -1807,7 +1700,6 @@ def main():
 
     make_board_label = not args.no_board_labels
 
-    # 2. Generate Train split
     if args.train_count > 0:
         generate_split_dataset(
             split_name="train",
@@ -1825,7 +1717,6 @@ def main():
             max_attempts=args.max_sample_attempts,
         )
 
-    # 3. Generate Validation split
     if args.val_count > 0:
         generate_split_dataset(
             split_name="val",
@@ -1843,7 +1734,6 @@ def main():
             max_attempts=args.max_sample_attempts,
         )
 
-    # 4. Generate Test split
     if args.test_count > 0:
         generate_split_dataset(
             split_name="test",
