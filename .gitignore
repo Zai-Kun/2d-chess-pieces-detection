@@ -5,3 +5,6 @@ datasets/*
 assets/headers.txt
 tmp/*
 results/*
+models/*
+test_images/*.jpg
+test_images/*.png
