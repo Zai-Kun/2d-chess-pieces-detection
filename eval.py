@@ -720,6 +720,8 @@ def main() -> int:
         matched = 0
         missing_reference = 0
         board_not_detected = 0
+        total_different_squares = 0
+        sum_percentage_different = 0.0
         used_output_paths: set[Path] = set()
 
         print(f"[INFO] Input:  {input_path}")
@@ -792,6 +794,9 @@ def main() -> int:
                         is_match = diff_count == 0
                         compared += 1
                         matched += int(is_match)
+                        total_different_squares += diff_count
+                        sum_percentage_different += percentage
+
                         fen_results[relative_key] = {
                             "status": "match" if is_match else "mismatch",
                             "reference_key": reference_key,
@@ -802,7 +807,7 @@ def main() -> int:
                             "percentage_different": percentage,
                             "differences": differences,
                         }
-                        print(f"  FEN {'MATCH' if is_match else 'MISMATCH'}: {diff_count}/64 squares differ.")
+                        print(f"  FEN {'MATCH' if is_match else 'MISMATCH'}: {diff_count}/64 squares differ ({percentage:.1f}% error).")
                         if differences:
                             print("  " + "; ".join(differences))
 
@@ -861,6 +866,10 @@ def main() -> int:
 
         if args.match_fen:
             mismatched = compared - matched
+            mean_fen_error_percent = (sum_percentage_different / compared) if compared else 0.0
+            square_accuracy_percent = ((64 * compared - total_different_squares) / (64 * compared) * 100.0) if compared else 0.0
+            evaluation_percent = square_accuracy_percent  # Error-weighted evaluation percentage accounting for FEN error magnitude
+
             report = {
                 "summary": {
                     "images_processed": processed,
@@ -871,6 +880,10 @@ def main() -> int:
                     "board_not_detected": board_not_detected,
                     "accuracy": (matched / compared) if compared else None,
                     "accuracy_percent": (matched / compared * 100.0) if compared else None,
+                    "exact_match_accuracy_percent": (matched / compared * 100.0) if compared else None,
+                    "mean_fen_error_percent": mean_fen_error_percent,
+                    "square_accuracy_percent": square_accuracy_percent,
+                    "evaluation_percent": evaluation_percent,
                     "fen_format": "placement only; top image row first; no POV or game-state fields",
                 },
                 "images": fen_results,
@@ -882,13 +895,16 @@ def main() -> int:
 
             print("\n[FEN SUMMARY]")
             print(
-                f"Compared: {compared} | Matches: {matched} | Mismatches: {mismatched} | "
+                f"Compared: {compared} | Matches: {matched} | Mismatched: {mismatched} | "
                 f"Missing references: {missing_reference} | Board not detected: {board_not_detected}"
             )
             if compared:
-                print(f"Accuracy: {matched / compared:.2%}")
+                print(f"Exact Match Accuracy:         {matched / compared:.2%}")
+                print(f"Mean FEN Error:               {mean_fen_error_percent:.2f}%")
+                print(f"Square-Level Accuracy:        {square_accuracy_percent:.2f}%")
+                print(f"Final Evaluation Percentage:  {evaluation_percent:.2f}% (Error-Weighted)")
             else:
-                print("Accuracy: N/A (no images were compared)")
+                print("Evaluation Percentage: N/A (no images were compared)")
             print(f"Report: {report_path}")
 
         print(
