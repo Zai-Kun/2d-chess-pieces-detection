@@ -70,7 +70,6 @@ FEN_TO_PIECE = {
 BOARDS_DIR = "assets/boards"
 PIECES_DIR = "assets/pieces"
 BACKGROUND_NOISE_DIR = "assets/random_noise_backgrounds"
-TEXTURES_DIR = "assets/textures"
 DATASETS_IMAGES_DIR = "datasets/images"
 DATASETS_LABELS_DIR = "datasets/labels"
 
@@ -771,18 +770,16 @@ def compose_embedded_board(
     """
     canvas = None
     if bg_file:
-        for folder in [BACKGROUND_NOISE_DIR, TEXTURES_DIR]:
-            candidate = os.path.join(folder, bg_file) if not os.path.isabs(bg_file) else bg_file
-            if os.path.exists(candidate):
-                try:
-                    canvas = (
-                        Image.open(candidate)
-                        .convert("RGB")
-                        .resize((canvas_size, canvas_size), Image.Resampling.BICUBIC)
-                    )
-                    break
-                except Exception:
-                    pass
+        candidate = bg_file if os.path.isabs(bg_file) else os.path.join(BACKGROUND_NOISE_DIR, bg_file)
+        if os.path.exists(candidate):
+            try:
+                canvas = (
+                    Image.open(candidate)
+                    .convert("RGB")
+                    .resize((canvas_size, canvas_size), Image.Resampling.BICUBIC)
+                )
+            except Exception:
+                pass
     if canvas is None:
         canvas = Image.new("RGB", (canvas_size, canvas_size), (45, 42, 38))
 
@@ -1016,14 +1013,16 @@ def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio
         val_boards = []
         test_boards = []
 
-    # Discover available background images, falling back to textures or procedural
+    # Discover available background images. Textures are intentionally not used
+    # as backgrounds here: they are reserved for board generation.
     all_bgs = []
     if os.path.exists(BACKGROUND_NOISE_DIR):
         all_bgs.extend([f for f in os.listdir(BACKGROUND_NOISE_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
-    if not all_bgs and os.path.exists(TEXTURES_DIR):
-        all_bgs.extend([f for f in os.listdir(TEXTURES_DIR) if f.lower().endswith((".jpg", ".jpeg", ".png"))])
     if not all_bgs:
-        all_bgs = [f"procedural_{i}.png" for i in range(12)]
+        raise RuntimeError(
+            f"No background images found in '{BACKGROUND_NOISE_DIR}'. "
+            "Add .jpg/.jpeg/.png scene/background images; textures are not used as backgrounds."
+        )
 
     rng.shuffle(all_bgs)
     if holdout_assets:
@@ -1083,8 +1082,9 @@ def _generate_single_sample_once(
     board_img = apply_board_overlays(board_img, fen, tile_size, flipped=flipped)
 
     # 3. Choose Composition Environment (Clean 2D digital screen compositions only)
-    # Embedded boards are now larger, so they no longer need to dominate the mix.
-    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.15, 0.40, 0.15, 0.30])[0]
+    # Bias toward embedded boards on real background photos; keep clean solid
+    # backgrounds rare.
+    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.05, 0.30, 0.40, 0.25])[0]
 
     # 4. Solid tile-matched background for clean full-board views only.
     # Other compositions keep their photographic / themed backgrounds.

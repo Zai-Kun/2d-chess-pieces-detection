@@ -16,7 +16,7 @@ An advanced, production-grade dataset generation pipeline and quality assurance 
 - **Four Composition Environments:**
   1. **Clean Full Board (85–100% frame):** Boards placed on a solid background sampled from a light tile, dark tile, or neutral grey — with no visible boundary — plus coordinate notation.
   2. **Web & Desktop Chess Interface (50–75% frame):** Simulates Chess.com, Lichess, and chess applications with dark/light themes, vertical evaluation bars, player avatar cards, rating badges, and digital clocks.
-  3. **Embedded / Medium-Small Board Context (19–62% of canvas; ~120–400 px at 640):** Chessboards placed on diverse photographic backgrounds and clutter to train small-object detection (vital for YOLO26's STAL label assignment), while keeping pieces large enough to label reliably.
+  3. **Embedded / Medium-Small Board Context (19–62% of canvas; ~120–400 px at 640):** Chessboards placed on diverse photographic backgrounds from `assets/random_noise_backgrounds` and clutter to train small-object detection (vital for YOLO26's STAL label assignment), while keeping pieces large enough to label reliably.
   4. **Photographed Screen / Physical Capture:** Simulates smartphone camera captures of computer monitors or phones with keystone perspective warp, subtle LCD sub-pixel moiré patterns, camera vignetting, and lighting gradients.
 - **Realistic In-Game Overlays:**
   - **Move Highlights:** Subtle yellow-green, olive, cyan, or purple highlights on the from-square and to-square.
@@ -37,7 +37,7 @@ An advanced, production-grade dataset generation pipeline and quality assurance 
 - The enclosing axis-aligned bounding box is computed from the transformed corners and clamped to $[0, 1]$, guaranteeing **zero out-of-bounds errors** and mathematically correct labels.
 
 ### 5. Deterministic Zero-Leakage Dataset Splitting
-- Piece sets (66 total), board designs (112 total), and background textures (2,900+ total) are partitioned into **strictly disjoint** `train`, `val`, and `test` subsets using a fixed random seed.
+- Piece sets (66 total), board designs (112 total), and scene/background images (2,900+ total) are partitioned into **strictly disjoint** `train`, `val`, and `test` subsets using a fixed random seed.
 - **Zero Data Leakage:** Validation and test splits evaluate piece sets and board themes that the model has **never seen during training**, providing a genuine measure of out-of-domain generalization.
 
 ---
@@ -50,7 +50,7 @@ An advanced, production-grade dataset generation pipeline and quality assurance 
 │   ├── boards/                    # 112 board textures (wood, marble, glass, flat)
 │   ├── pieces/                    # 66 piece sets (Neo, cburnett, Alpha, Classic, etc.)
 │   ├── random_noise_backgrounds/  # 2,900+ realistic scene & clutter backgrounds
-│   └── textures/                  # High-resolution wood and marble textures
+│   └── textures/                  # High-resolution wood and marble textures (board generation only)
 ├── datasets/                      # Generated dataset (images & labels)
 │   ├── images/ {train, val, test}
 │   └── labels/ {train, val, test}
