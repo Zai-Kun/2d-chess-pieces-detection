@@ -8,3 +8,4 @@ results/*
 models/*
 test_images/*.jpg
 test_images/*.png
+predictions/*

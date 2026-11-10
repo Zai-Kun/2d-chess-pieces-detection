@@ -127,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     )
     fen_group.add_argument(
         "--generate-fen", action="store_true",
-        help="Generate fens.json in the input directory; refuses to overwrite an existing file.",
+        help="Add missing image entries to fens.json in the input directory, preserving existing entries.",
     )
 
     args = parser.parse_args()
@@ -559,7 +559,7 @@ def draw_detections(image: Any, detections: list[Detection], scale: float) -> No
 def load_fens_json(input_root: Path) -> tuple[Path, dict[str, str]]:
     fen_path = input_root / "fens.json"
     if not fen_path.is_file():
-        raise FileNotFoundError(f"--match-fen was set, but fens.json was not found: {fen_path}")
+        raise FileNotFoundError(f"fens.json was not found: {fen_path}")
 
     try:
         with fen_path.open("r", encoding="utf-8") as file:
@@ -677,12 +677,6 @@ def main() -> int:
     excluded_output = output_dir if is_directory_input and is_relative_to(output_dir, input_root) else None
 
     fen_target_path = input_root / "fens.json"
-    if args.generate_fen and fen_target_path.exists():
-        print(
-            f"[ERROR] --generate-fen will not overwrite the existing file: {fen_target_path}",
-            file=sys.stderr,
-        )
-        return 1
 
     try:
         image_paths = collect_images(input_path, args.recursive, excluded_output)
@@ -691,9 +685,17 @@ def main() -> int:
             return 1
 
         expected_fens: dict[str, str] = {}
+        existing_fens: dict[str, str] = {}
         if args.match_fen:
             fen_path, expected_fens = load_fens_json(input_root)
             print(f"[INFO] Loaded {len(expected_fens)} reference FENs from {fen_path}")
+        elif args.generate_fen and fen_target_path.exists():
+            # Load existing references so generation can append only missing images.
+            _, existing_fens = load_fens_json(input_root)
+            print(
+                f"[INFO] Found existing {fen_target_path} with "
+                f"{len(existing_fens)} entries; existing entries will be preserved."
+            )
 
         from ultralytics import YOLO
 
@@ -709,7 +711,8 @@ def main() -> int:
         for image_path in image_paths:
             basename_counts[image_path.name] = basename_counts.get(image_path.name, 0) + 1
 
-        generated_fens: dict[str, str] = {}
+        generated_fens: dict[str, str] = dict(existing_fens)
+        new_fen_count = 0
         fen_results: dict[str, dict[str, Any]] = {}
         processed = 0
         failed = 0
@@ -747,10 +750,17 @@ def main() -> int:
                 relative_key = image_key(image_path, input_root)
 
                 if args.generate_fen:
-                    if predicted_fen is None:
+                    existing_key = resolve_reference_key(
+                        image_path, input_root, existing_fens, basename_counts
+                    )
+                    if existing_key is not None:
+                        print(f"  [FEN] Preserving existing entry: {existing_key}")
+                    elif predicted_fen is None:
                         print("  [WARN] Board not detected; no FEN generated for this image.")
                     else:
                         generated_fens[relative_key] = predicted_fen
+                        new_fen_count += 1
+                        print(f"  [FEN] Added: {relative_key} -> {predicted_fen}")
 
                 if args.match_fen:
                     reference_key = resolve_reference_key(
@@ -829,11 +839,23 @@ def main() -> int:
                 failed += 1
 
         if args.generate_fen:
-            if generated_fens:
-                with fen_target_path.open("x", encoding="utf-8") as file:
+            if new_fen_count:
+                # Atomic replacement avoids leaving a partially-written fens.json.
+                temporary_fen_path = fen_target_path.with_name(f"{fen_target_path.name}.tmp")
+                with temporary_fen_path.open("w", encoding="utf-8") as file:
                     json.dump(generated_fens, file, indent=2, ensure_ascii=False)
                     file.write("\n")
-                print(f"\n[INFO] Generated {len(generated_fens)} FEN entries: {fen_target_path}")
+                temporary_fen_path.replace(fen_target_path)
+                print(
+                    f"\n[INFO] Added {new_fen_count} new FEN entr"
+                    f"{'y' if new_fen_count == 1 else 'ies'}; "
+                    f"{len(generated_fens)} total: {fen_target_path}"
+                )
+            elif existing_fens:
+                print(
+                    f"\n[INFO] No new FEN entries needed; "
+                    f"all matching images already have entries ({len(existing_fens)} total)."
+                )
             else:
                 print("\n[WARN] No FENs were generated because no input image had a detected board.")
 
