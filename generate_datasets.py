@@ -955,28 +955,41 @@ def apply_photometric_effects(img):
 # Deterministic Zero-Leakage Dataset Partitioning
 # ==============================================================================
 
-def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio=0.15):
+def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio=0.15, holdout_assets=True):
     """
     Deterministically partitions available boards, piece sets, and background noise
     into disjoint Train, Validation, and Test subsets with ZERO data leakage.
+
+    If `holdout_assets` is False, no partition is performed: every piece set,
+    board, and background is assigned to Train, leaving Val/Test empty.
     """
     rng = random.Random(seed)
 
     all_pieces = sorted(os.listdir(PIECES_DIR))
     rng.shuffle(all_pieces)
-    np_train = int(len(all_pieces) * train_ratio)
-    np_val = int(len(all_pieces) * val_ratio)
-    train_pieces = all_pieces[:np_train]
-    val_pieces = all_pieces[np_train : np_train + np_val]
-    test_pieces = all_pieces[np_train + np_val :]
+    if holdout_assets:
+        np_train = int(len(all_pieces) * train_ratio)
+        np_val = int(len(all_pieces) * val_ratio)
+        train_pieces = all_pieces[:np_train]
+        val_pieces = all_pieces[np_train : np_train + np_val]
+        test_pieces = all_pieces[np_train + np_val :]
+    else:
+        train_pieces = all_pieces
+        val_pieces = []
+        test_pieces = []
 
     all_boards = sorted(os.listdir(BOARDS_DIR))
     rng.shuffle(all_boards)
-    nb_train = int(len(all_boards) * train_ratio)
-    nb_val = int(len(all_boards) * val_ratio)
-    train_boards = all_boards[:nb_train]
-    val_boards = all_boards[nb_train : nb_train + nb_val]
-    test_boards = all_boards[nb_train + nb_val :]
+    if holdout_assets:
+        nb_train = int(len(all_boards) * train_ratio)
+        nb_val = int(len(all_boards) * val_ratio)
+        train_boards = all_boards[:nb_train]
+        val_boards = all_boards[nb_train : nb_train + nb_val]
+        test_boards = all_boards[nb_train + nb_val :]
+    else:
+        train_boards = all_boards
+        val_boards = []
+        test_boards = []
 
     # Discover available background images, falling back to textures or procedural
     all_bgs = []
@@ -988,13 +1001,18 @@ def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio
         all_bgs = [f"procedural_{i}.png" for i in range(12)]
 
     rng.shuffle(all_bgs)
-    ng_train = max(1, int(len(all_bgs) * train_ratio))
-    ng_val = max(1, int(len(all_bgs) * val_ratio))
-    train_bgs = all_bgs[:ng_train]
-    val_bgs = all_bgs[ng_train : ng_train + ng_val]
-    test_bgs = all_bgs[ng_train + ng_val :]
-    if not test_bgs:
-        test_bgs = val_bgs.copy()
+    if holdout_assets:
+        ng_train = max(1, int(len(all_bgs) * train_ratio))
+        ng_val = max(1, int(len(all_bgs) * val_ratio))
+        train_bgs = all_bgs[:ng_train]
+        val_bgs = all_bgs[ng_train : ng_train + ng_val]
+        test_bgs = all_bgs[ng_train + ng_val :]
+        if not test_bgs:
+            test_bgs = val_bgs.copy()
+    else:
+        train_bgs = all_bgs
+        val_bgs = []
+        test_bgs = []
 
     return {
         "train": {"pieces": train_pieces, "boards": train_boards, "bgs": train_bgs},
@@ -1252,8 +1270,11 @@ def main():
         print(f"Cleaning existing directory: {args.out_dir}")
         shutil.rmtree(args.out_dir)
 
-    # 1. Partition assets deterministically with zero data leakage
-    partitions = split_assets(seed=args.seed)
+    # 1. Partition assets deterministically with zero data leakage.
+    # When no validation or test samples are requested, skip the split entirely
+    # so every piece set and board is used for training.
+    holdout_assets = args.val_count > 0 or args.test_count > 0
+    partitions = split_assets(seed=args.seed, holdout_assets=holdout_assets)
     print("\nDeterministic Asset Partitioning (Zero Data Leakage):")
     for sname in ["train", "val", "test"]:
         part = partitions[sname]
