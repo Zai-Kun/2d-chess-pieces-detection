@@ -79,6 +79,8 @@ DEFAULT_IMAGE_SIZE = 640
 DEFAULT_BOARD_SIZE = 640
 DEFAULT_ALPHA_THRESHOLD = 20  # Filters out translucent antialiasing fringe and soft shadows
 DEFAULT_SEED = 42
+DEFAULT_MIN_PIECE_PX = 12  # Reject/redraw samples with pieces smaller than this
+DEFAULT_MAX_SAMPLE_ATTEMPTS = 8  # Redraw attempts per sample before accepting the last one
 
 # Font setup
 _CACHED_FONT = None
@@ -731,6 +733,26 @@ def compose_web_ui(
     return canvas, scaled_boxes, board_box
 
 
+def get_embedded_board_size(canvas_size):
+    """
+    Chooses a medium/small embedded board size as a fraction of the canvas.
+    The old fixed 80-100 px range made pieces only ~8 px at 640 px, which is
+    too small to label and learn reliably. This keeps the board embedded while
+    giving pieces enough pixels to supervise.
+    """
+    min_size = max(120, int(round(canvas_size * 0.19)))
+    max_size = int(round(canvas_size * 0.62))
+
+    # Keep the board inside the canvas for unusually small resolutions.
+    min_size = min(min_size, canvas_size - 8)
+    max_size = min(max_size, canvas_size - 4)
+    max_size = max(max_size, min_size + 1)
+
+    mode = int(round(canvas_size * 0.375))
+    mode = min(max(mode, min_size), max_size)
+    return int(random.triangular(min_size, max_size, mode))
+
+
 def compose_embedded_board(
     board_img,
     piece_boxes,
@@ -742,6 +764,9 @@ def compose_embedded_board(
     """
     Composition 3: Small or embedded board on realistic photographic background.
     Tests detection robustness on small chessboards and cluttered scenes (STAL).
+
+    The board occupies roughly 19-62% of the canvas (about 120-400 px at 640),
+    instead of the previous fixed 80-100 px which produced unlearnably tiny pieces.
     The chess_board bounding box strictly bounds the 64 checkerboard squares.
     """
     canvas = None
@@ -761,8 +786,8 @@ def compose_embedded_board(
     if canvas is None:
         canvas = Image.new("RGB", (canvas_size, canvas_size), (45, 42, 38))
 
-    # Small embedded board: 80 to 100 pixels
-    target_board_size = random.randint(80, 100)
+    # Medium/small embedded board: larger than the old 80-100 px range.
+    target_board_size = get_embedded_board_size(canvas_size)
     bw, bh = board_img.size
     resized_board = board_img.resize((target_board_size, target_board_size), Image.Resampling.LANCZOS)
 
@@ -1025,23 +1050,25 @@ def split_assets(seed=DEFAULT_SEED, train_ratio=0.70, val_ratio=0.15, test_ratio
 # Single Image Generation Pipeline
 # ==============================================================================
 
-def generate_single_sample(args):
-    """Worker task that generates a single sample image and its YOLO label file."""
-    (
-        img_id,
-        split_name,
-        piece_set_name,
-        board_file,
-        bg_file,
-        canvas_size,
-        base_board_size,
-        make_board_label,
-        images_dir,
-        labels_dir,
-        pieces_pool,
-        boards_pool,
-    ) = args
-
+def _generate_single_sample_once(
+    img_id,
+    split_name,
+    piece_set_name,
+    board_file,
+    bg_file,
+    canvas_size,
+    base_board_size,
+    make_board_label,
+    images_dir,
+    labels_dir,
+    pieces_pool,
+    boards_pool,
+    min_piece_px=DEFAULT_MIN_PIECE_PX,
+):
+    """
+    Builds one sample and saves it. Returns False if a piece is below
+    `min_piece_px`, so the caller can redraw with a different deterministic seed.
+    """
     # Deterministic position generation
     fen = generate_fen(strategy="auto", allow_flip=True)
     flipped = random.random() < 0.50
@@ -1056,7 +1083,8 @@ def generate_single_sample(args):
     board_img = apply_board_overlays(board_img, fen, tile_size, flipped=flipped)
 
     # 3. Choose Composition Environment (Clean 2D digital screen compositions only)
-    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.15, 0.35, 0.30, 0.20])[0]
+    # Embedded boards are now larger, so they no longer need to dominate the mix.
+    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.15, 0.40, 0.15, 0.30])[0]
 
     # 4. Solid tile-matched background for clean full-board views only.
     # Other compositions keep their photographic / themed backgrounds.
@@ -1146,6 +1174,19 @@ def generate_single_sample(args):
         )
         all_boxes = scaled_boxes + (board_boxes if make_board_label else [])
 
+    # Reject samples where any piece is too small to supervise reliably.
+    # This mainly protects against embedded/multi-board compositions.
+    if min_piece_px > 0:
+        for cid, x1, y1, x2, y2 in all_boxes:
+            if cid == 12:  # chess_board
+                continue
+            x1_c = max(0.0, min(float(canvas_size), float(x1)))
+            y1_c = max(0.0, min(float(canvas_size), float(y1)))
+            x2_c = max(0.0, min(float(canvas_size), float(x2)))
+            y2_c = max(0.0, min(float(canvas_size), float(y2)))
+            if (x2_c - x1_c) < min_piece_px or (y2_c - y1_c) < min_piece_px:
+                return False
+
     # Convert to YOLO format
     yolo_labels = []
     for cid, x1, y1, x2, y2 in all_boxes:
@@ -1176,6 +1217,61 @@ def generate_single_sample(args):
     return True
 
 
+def generate_single_sample(args):
+    """
+    Worker entry point for one sample.
+
+    The task carries its own deterministic seed, so the same dataset seed
+    reproduces identical images/labels regardless of worker count or scheduling.
+    Samples that contain pieces below `min_piece_px` are redrawn with a new
+    deterministic attempt seed. The final attempt always accepts the sample so
+    the requested dataset count is preserved.
+    """
+    (
+        img_id,
+        split_name,
+        piece_set_name,
+        board_file,
+        bg_file,
+        canvas_size,
+        base_board_size,
+        make_board_label,
+        images_dir,
+        labels_dir,
+        pieces_pool,
+        boards_pool,
+        task_seed,
+        min_piece_px,
+        max_attempts,
+    ) = args
+
+    min_piece_px = max(0, int(min_piece_px))
+    max_attempts = max(1, int(max_attempts))
+
+    for attempt in range(max_attempts):
+        random.seed(f"{task_seed}:attempt:{attempt}")
+        accept_small = attempt == max_attempts - 1
+        saved = _generate_single_sample_once(
+            img_id,
+            split_name,
+            piece_set_name,
+            board_file,
+            bg_file,
+            canvas_size,
+            base_board_size,
+            make_board_label,
+            images_dir,
+            labels_dir,
+            pieces_pool,
+            boards_pool,
+            min_piece_px=0 if accept_small else min_piece_px,
+        )
+        if saved:
+            return True
+
+    return False
+
+
 # ==============================================================================
 # Main Generation Coordinator
 # ==============================================================================
@@ -1191,6 +1287,9 @@ def generate_split_dataset(
     make_board_label=True,
     num_workers=None,
     start_id=1,
+    seed=DEFAULT_SEED,
+    min_piece_px=DEFAULT_MIN_PIECE_PX,
+    max_attempts=DEFAULT_MAX_SAMPLE_ATTEMPTS,
 ):
     """Generates `count` samples for a given split using its assigned asset partition."""
     os.makedirs(images_dir, exist_ok=True)
@@ -1203,12 +1302,17 @@ def generate_split_dataset(
     if not pieces_list or not boards_list or not bgs_list:
         raise ValueError(f"Empty asset partition for split {split_name}!")
 
+    # Per-split RNG so train/val/test task lists stay reproducible independently
+    # of generation order and counts in the other splits.
+    task_rng = random.Random(f"{seed}:{split_name}:assets")
+
     tasks = []
     for idx in range(count):
         sample_id = start_id + idx
-        piece_set = random.choice(pieces_list)
-        board_file = random.choice(boards_list)
-        bg_file = random.choice(bgs_list)
+        piece_set = task_rng.choice(pieces_list)
+        board_file = task_rng.choice(boards_list)
+        bg_file = task_rng.choice(bgs_list)
+        task_seed = f"{seed}:{split_name}:{sample_id}"
 
         tasks.append((
             sample_id,
@@ -1223,6 +1327,9 @@ def generate_split_dataset(
             labels_dir,
             pieces_list,
             boards_list,
+            task_seed,
+            min_piece_px,
+            max_attempts,
         ))
 
     workers = num_workers or max(1, multiprocessing.cpu_count())
@@ -1247,14 +1354,31 @@ def main():
     parser.add_argument("--test-count", type=int, default=200, help="Number of test samples to generate")
     parser.add_argument("--imgsz", type=int, default=DEFAULT_IMAGE_SIZE, help="Output image resolution (default 640)")
     parser.add_argument("--board-size", type=int, default=DEFAULT_BOARD_SIZE, help="Base board resolution (default 640)")
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducible asset split")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducible asset split and sample content")
     parser.add_argument("--workers", type=int, default=None, help="Number of multiprocessing workers")
     parser.add_argument("--out-dir", type=str, default="datasets", help="Root dataset output directory")
     parser.add_argument("--clean", action="store_true", help="Remove existing output directory before generation")
     parser.add_argument(
+        "--min-piece-px",
+        type=int,
+        default=DEFAULT_MIN_PIECE_PX,
+        help=f"Redraw samples where any piece is smaller than this many pixels (default {DEFAULT_MIN_PIECE_PX}; 0 disables)",
+    )
+    parser.add_argument(
+        "--max-sample-attempts",
+        type=int,
+        default=DEFAULT_MAX_SAMPLE_ATTEMPTS,
+        help=f"Maximum redraw attempts per sample for --min-piece-px (default {DEFAULT_MAX_SAMPLE_ATTEMPTS})",
+    )
+    parser.add_argument(
         "--no-board-labels", action="store_true", help="Do not generate labels for the chessboard class (12)"
     )
     args = parser.parse_args()
+
+    if args.min_piece_px < 0:
+        parser.error("--min-piece-px must be >= 0")
+    if args.max_sample_attempts < 1:
+        parser.error("--max-sample-attempts must be >= 1")
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -1295,6 +1419,9 @@ def main():
             make_board_label=make_board_label,
             num_workers=args.workers,
             start_id=1,
+            seed=args.seed,
+            min_piece_px=args.min_piece_px,
+            max_attempts=args.max_sample_attempts,
         )
 
     # 3. Generate Validation split
@@ -1310,6 +1437,9 @@ def main():
             make_board_label=make_board_label,
             num_workers=args.workers,
             start_id=1,
+            seed=args.seed,
+            min_piece_px=args.min_piece_px,
+            max_attempts=args.max_sample_attempts,
         )
 
     # 4. Generate Test split
@@ -1325,6 +1455,9 @@ def main():
             make_board_label=make_board_label,
             num_workers=args.workers,
             start_id=1,
+            seed=args.seed,
+            min_piece_px=args.min_piece_px,
+            max_attempts=args.max_sample_attempts,
         )
 
     print("\nDataset generation completed successfully!")

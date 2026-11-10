@@ -16,7 +16,7 @@ An advanced, production-grade dataset generation pipeline and quality assurance 
 - **Four Composition Environments:**
   1. **Clean Full Board (85–100% frame):** Boards placed on a solid background sampled from a light tile, dark tile, or neutral grey — with no visible boundary — plus coordinate notation.
   2. **Web & Desktop Chess Interface (50–75% frame):** Simulates Chess.com, Lichess, and chess applications with dark/light themes, vertical evaluation bars, player avatar cards, rating badges, and digital clocks.
-  3. **Embedded / Small Board Context (80–100 px):** Small chessboards placed on diverse photographic backgrounds and clutter to train small-object detection (vital for YOLO26's STAL label assignment).
+  3. **Embedded / Medium-Small Board Context (19–62% of canvas; ~120–400 px at 640):** Chessboards placed on diverse photographic backgrounds and clutter to train small-object detection (vital for YOLO26's STAL label assignment), while keeping pieces large enough to label reliably.
   4. **Photographed Screen / Physical Capture:** Simulates smartphone camera captures of computer monitors or phones with keystone perspective warp, subtle LCD sub-pixel moiré patterns, camera vignetting, and lighting gradients.
 - **Realistic In-Game Overlays:**
   - **Move Highlights:** Subtle yellow-green, olive, cyan, or purple highlights on the from-square and to-square.
@@ -92,13 +92,19 @@ python3 generate_datasets.py --train-count 100 --val-count 25 --test-count 25 --
 
 # Higher resolution (800x800) for enhanced small-piece detection
 python3 generate_datasets.py --imgsz 800 --train-count 3000 --val-count 500 --test-count 500
+
+# Train-only dataset: when both val and test counts are 0, all piece sets,
+# boards, and backgrounds go into train instead of being partitioned.
+python3 generate_datasets.py --train-count 5000 --val-count 0 --test-count 0 --seed 42 --clean
 ```
 
 ### Generator Arguments:
-- `--train-count`, `--val-count`, `--test-count`: Number of images to generate per split.
+- `--train-count`, `--val-count`, `--test-count`: Number of images to generate per split. If val and test are both `0`, all assets go to train.
 - `--imgsz`: Output canvas resolution (default: `640`).
 - `--board-size`: Base rendered board resolution (default: `640`).
-- `--seed`: Random seed for deterministic asset partitioning (default: `42`).
+- `--seed`: Random seed for deterministic asset partitioning **and sample content** (default: `42`). The same seed produces identical images and labels regardless of `--workers`.
+- `--min-piece-px`: Redraw samples where any piece is smaller than this many pixels (default: `12`; `0` disables).
+- `--max-sample-attempts`: Maximum redraw attempts per sample for `--min-piece-px` (default: `8`).
 - `--workers`: Number of parallel CPU workers (default: all available cores).
 - `--clean`: Wipes the output directory before generating.
 - `--no-board-labels`: Omits class 12 (`chess_board`) if piece-only detection is desired.
