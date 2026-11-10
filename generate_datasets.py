@@ -82,14 +82,13 @@ DEFAULT_MIN_PIECE_PX = 12  # Reject/redraw samples with pieces smaller than this
 DEFAULT_MAX_SAMPLE_ATTEMPTS = 8  # Redraw attempts per sample before accepting the last one
 
 # Font setup
-_CACHED_FONT = None
+_CACHED_FONTS = {}
 
 
 def get_default_font(size=14):
     """Loads a readable TTF font if available on the system, otherwise PIL default."""
-    global _CACHED_FONT
-    if _CACHED_FONT is not None:
-        return _CACHED_FONT
+    if size in _CACHED_FONTS:
+        return _CACHED_FONTS[size]
     ttf_candidates = [
         "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -99,12 +98,14 @@ def get_default_font(size=14):
     for path in ttf_candidates:
         if os.path.exists(path):
             try:
-                _CACHED_FONT = ImageFont.truetype(path, size)
-                return _CACHED_FONT
+                font = ImageFont.truetype(path, size)
+                _CACHED_FONTS[size] = font
+                return font
             except Exception:
                 pass
-    _CACHED_FONT = ImageFont.load_default()
-    return _CACHED_FONT
+    font = ImageFont.load_default()
+    _CACHED_FONTS[size] = font
+    return font
 
 
 # ==============================================================================
@@ -603,6 +604,386 @@ UI_THEME_COLORS = [
     {"bg": (248, 249, 250), "card": (255, 255, 255), "text": (33, 37, 41), "accent": (118, 150, 86)},
 ]
 
+UI_ACCENT_COLORS = [
+    (59, 130, 246),   # blue
+    (34, 197, 94),    # green
+    (239, 68, 68),    # red
+    (234, 179, 8),    # amber
+    (168, 85, 247),   # purple
+    (6, 182, 212),    # cyan
+    (249, 115, 22),   # orange
+    (236, 72, 153),   # pink
+]
+
+UI_CLUTTER_WORDS = [
+    "Play", "Games", "Live", "Analysis", "Players", "Chat", "Settings",
+    "Profile", "Search", "Home", "Puzzles", "Watch", "Learn", "Train",
+    "Review", "Board", "Engine", "Score", "Depth", "Match", "Lobby",
+    "Friends", "History", "Open", "Share", "Save", "Apply", "Cancel",
+    "Options", "Notifications", "New Game", "Resign", "Draw", "Rematch",
+    "Online", "Ranked", "Casual", "Tournament", "Broadcast", "Stats",
+    "Move", "Best", "Eval", "Tactics", "Study", "Library", "Menu",
+]
+
+
+def draw_random_ui_clutter(canvas, canvas_size, exclude_rects=None, theme=None):
+    """
+    Draws randomized UI-like distractor elements on the background.
+
+    This is called before the chessboard is pasted, so clutter never occludes
+    pieces or corrupts labels. Elements are intentionally varied in type, size,
+    opacity, and placement: cards, windows, toolbars, sidebars, chat bubbles,
+    charts, buttons, toggles, clocks, progress bars, tabs, and text blocks.
+    """
+    if theme is None:
+        theme = random.choice(UI_THEME_COLORS)
+
+    scale = max(0.5, canvas_size / 640.0)
+
+    def s(value):
+        return max(1, int(round(value * scale)))
+
+    def jitter(color, amount=18):
+        return tuple(max(0, min(255, c + random.randint(-amount, amount))) for c in color[:3])
+
+    def rgba(color, alpha):
+        return jitter(color) + (max(0, min(255, alpha)),)
+
+    def font(size):
+        return get_default_font(max(6, s(size)))
+
+    def text(x, y, value, size=10, color=None, alpha=180):
+        draw.text((x, y), value, font=font(size), fill=rgba(color or theme["text"], alpha))
+
+    def centered_text(x1, y1, x2, y2, value, size=9, color=None, alpha=190):
+        f = font(size)
+        bbox = draw.textbbox((0, 0), value, font=f)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(
+            (x1 + max(0, (x2 - x1 - tw) // 2), y1 + max(0, (y2 - y1 - th) // 2)),
+            value,
+            font=f,
+            fill=rgba(color or theme["text"], alpha),
+        )
+
+    def overlaps(x1, y1, x2, y2):
+        margin = s(7)
+        for ex1, ey1, ex2, ey2 in exclude_rects or []:
+            if not (x2 + margin < ex1 or x1 - margin > ex2 or y2 + margin < ey1 or y1 - margin > ey2):
+                return True
+        return False
+
+    def free_rect(w, h, pad=None):
+        pad = s(5) if pad is None else pad
+        w = max(1, min(w, canvas_size - 2 * pad))
+        h = max(1, min(h, canvas_size - 2 * pad))
+        max_x = max(pad, canvas_size - w - pad)
+        max_y = max(pad, canvas_size - h - pad)
+        for _ in range(24):
+            x1 = random.randint(pad, max_x)
+            y1 = random.randint(pad, max_y)
+            x2, y2 = x1 + w, y1 + h
+            if not overlaps(x1, y1, x2, y2):
+                return x1, y1, x2, y2
+        return None
+
+    def rounded_panel(x1, y1, x2, y2, fill_alpha=None, radius=None):
+        radius = radius or s(random.randint(4, 9))
+        radius = max(1, min(radius, max(1, (x2 - x1) // 3), max(1, (y2 - y1) // 3)))
+        draw.rounded_rectangle(
+            [x1 + s(3), y1 + s(3), x2 + s(3), y2 + s(3)],
+            radius=radius,
+            fill=(0, 0, 0, random.randint(25, 55)),
+        )
+        draw.rounded_rectangle(
+            [x1, y1, x2, y2],
+            radius=radius,
+            fill=rgba(theme["card"], fill_alpha or random.randint(140, 220)),
+            outline=rgba(theme["text"], random.randint(20, 65)),
+            width=max(1, s(1)),
+        )
+        return radius
+
+    def text_lines(x1, y1, x2, y2=None, max_lines=4):
+        if y2 is None:
+            y2 = canvas_size - s(4)
+        count = random.randint(1, max_lines)
+        line_h = max(2, s(3))
+        gap = max(4, s(10))
+        for i in range(count):
+            yy = y1 + i * gap
+            if yy + line_h > y2:
+                break
+            width = random.randint(max(4, int((x2 - x1) * 0.30)), max(6, int((x2 - x1) * 0.88)))
+            draw.rounded_rectangle(
+                [x1, yy, min(x2, x1 + width), yy + line_h],
+                radius=max(1, line_h // 2),
+                fill=rgba(theme["text"], random.randint(70, 145)),
+            )
+
+    def draw_panel():
+        w, h = random.randint(s(70), s(250)), random.randint(s(55), s(175))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2)
+        text(x1 + s(9), y1 + s(7), random.choice(UI_CLUTTER_WORDS), size=random.randint(9, 14))
+        text_lines(x1 + s(9), y1 + s(30), x2 - s(9), y2 - s(9), max_lines=4)
+
+    def draw_window():
+        w, h = random.randint(s(110), s(290)), random.randint(s(80), s(210))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2, fill_alpha=random.randint(170, 230))
+        bar_y = y1 + s(22)
+        draw.line([x1, bar_y, x2, bar_y], fill=rgba(theme["text"], 35), width=max(1, s(1)))
+        for i, c in enumerate([(239, 68, 68), (234, 179, 8), (34, 197, 94)]):
+            cx = x1 + s(10) + i * s(12)
+            draw.ellipse([cx, y1 + s(7), cx + s(6), y1 + s(13)], fill=rgba(c, 190))
+        text(x1 + s(48), y1 + s(5), random.choice(UI_CLUTTER_WORDS), size=random.randint(9, 13))
+        text_lines(x1 + s(10), bar_y + s(12), x2 - s(10), y2 - s(10), max_lines=5)
+
+    def draw_toolbar():
+        w = random.randint(s(220), max(s(230), canvas_size - s(20)))
+        h = random.randint(s(24), s(46))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2, fill_alpha=random.randint(150, 215), radius=s(5))
+        draw.ellipse([x1 + s(8), y1 + s(7), x1 + s(24), y1 + s(23)], fill=rgba(theme["accent"], 190))
+        text(x1 + s(32), y1 + s(6), random.choice(UI_CLUTTER_WORDS), size=random.randint(9, 12))
+        for i in range(random.randint(2, 5)):
+            rx = x2 - s(18) - i * s(36)
+            if rx < x1 + s(90):
+                break
+            draw.rounded_rectangle(
+                [rx, y1 + s(7), rx + s(28), y1 + s(17)],
+                radius=s(3),
+                fill=rgba(theme["text"], random.randint(45, 90)),
+            )
+
+    def draw_sidebar():
+        w = random.randint(s(55), s(140))
+        h = random.randint(s(150), max(s(160), int(canvas_size * 0.72)))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2, fill_alpha=random.randint(150, 220))
+        rows = random.randint(3, 7)
+        row_h = max(s(12), (y2 - y1 - s(20)) // max(1, rows))
+        for i in range(rows):
+            ry = y1 + s(10) + i * row_h
+            if ry + s(10) > y2 - s(5):
+                break
+            draw.ellipse([x1 + s(7), ry, x1 + s(19), ry + s(12)], fill=rgba(theme["accent"], random.randint(120, 200)))
+            width = random.randint(s(14), max(s(16), (x2 - x1) - s(28)))
+            draw.rounded_rectangle(
+                [x1 + s(24), ry + s(2), x1 + s(24) + width, ry + s(8)],
+                radius=s(3),
+                fill=rgba(theme["text"], random.randint(70, 150)),
+            )
+
+    def draw_chat():
+        w, h = random.randint(s(100), s(230)), random.randint(s(60), s(145))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2, fill_alpha=random.randint(150, 220))
+        text(x1 + s(9), y1 + s(7), random.choice(["Chat", "Messages", "Live Chat", "Comments"]), size=random.randint(9, 13))
+        for i in range(random.randint(1, 3)):
+            by = y1 + s(30) + i * s(28)
+            if by + s(20) > y2 - s(5):
+                break
+            draw.ellipse([x1 + s(8), by + s(2), x1 + s(20), by + s(14)], fill=rgba(theme["accent"], 180))
+            text_lines(x1 + s(26), by + s(2), x2 - s(8), by + s(18), max_lines=2)
+
+    def draw_button():
+        w, h = random.randint(s(52), s(120)), random.randint(s(22), s(40))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        accent = random.choice(UI_ACCENT_COLORS + [theme["accent"]])
+        draw.rounded_rectangle(
+            [x1, y1, x2, y2],
+            radius=s(random.randint(4, 10)),
+            fill=rgba(accent, random.randint(150, 225)),
+            outline=rgba(theme["text"], 45),
+            width=max(1, s(1)),
+        )
+        centered_text(x1, y1, x2, y2, random.choice(UI_CLUTTER_WORDS), size=random.randint(8, 11))
+
+    def draw_chart():
+        w, h = random.randint(s(100), s(245)), random.randint(s(70), s(165))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2, fill_alpha=random.randint(155, 225))
+        text(x1 + s(9), y1 + s(7), random.choice(["Evaluation", "Accuracy", "Stats", "Activity"]), size=random.randint(8, 12))
+        base = y2 - s(14)
+        left = x1 + s(12)
+        right = x2 - s(10)
+        bars = random.randint(5, 12)
+        gap = max(2, (right - left) // max(1, bars))
+        for i in range(bars):
+            bx = left + i * gap
+            bh = random.randint(s(6), max(s(8), int((base - y1 - s(30)) * random.uniform(0.15, 1.0))))
+            draw.rectangle(
+                [bx, base - bh, bx + max(2, gap - s(2)), base],
+                fill=rgba(random.choice(UI_ACCENT_COLORS), random.randint(130, 210)),
+            )
+        draw.line([left, base, right, base], fill=rgba(theme["text"], 80), width=max(1, s(1)))
+
+    def draw_toggle():
+        w, h = random.randint(s(60), s(120)), random.randint(s(20), s(32))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        track_w = s(30)
+        track_x2 = x1 + track_w
+        draw.rounded_rectangle(
+            [x1, y1 + s(4), track_x2, y2 - s(4)],
+            radius=max(1, (y2 - y1) // 2),
+            fill=rgba(random.choice(UI_ACCENT_COLORS), random.randint(130, 190)),
+        )
+        knob_x = track_x2 - s(10) if random.random() < 0.5 else x1 + s(2)
+        draw.ellipse([knob_x, y1 + s(5), knob_x + s(10), y1 + s(15)], fill=rgba(theme["text"], 220))
+        text(track_x2 + s(8), y1 + s(6), random.choice(UI_CLUTTER_WORDS), size=random.randint(7, 10))
+
+    def draw_progress():
+        w, h = random.randint(s(80), s(230)), random.randint(s(8), s(18))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        draw.rounded_rectangle([x1, y1, x2, y2], radius=max(1, h // 2), fill=rgba(theme["text"], 35))
+        fill_w = random.randint(max(2, (x2 - x1) // 8), max(3, (x2 - x1) - 2))
+        draw.rounded_rectangle(
+            [x1, y1, x1 + fill_w, y2],
+            radius=max(1, h // 2),
+            fill=rgba(random.choice(UI_ACCENT_COLORS), random.randint(150, 220)),
+        )
+
+    def draw_eval_bar():
+        if random.random() < 0.5:
+            w, h = random.randint(s(8), s(16)), random.randint(s(90), s(260))
+        else:
+            w, h = random.randint(s(90), s(260)), random.randint(s(8), s(16))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        draw.rectangle([x1, y1, x2, y2], fill=rgba((35, 35, 35), 220))
+        ratio = random.uniform(0.15, 0.85)
+        if h > w:
+            split = y1 + int(h * ratio)
+            draw.rectangle([x1, split, x2, y2], fill=rgba((245, 245, 245), 225))
+        else:
+            split = x1 + int(w * ratio)
+            draw.rectangle([x1, y1, split, y2], fill=rgba((245, 245, 245), 225))
+        draw.rectangle([x1, y1, x2, y2], outline=rgba(theme["text"], 60), width=max(1, s(1)))
+
+    def draw_clock():
+        w, h = random.randint(s(62), s(110)), random.randint(s(28), s(50))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2, fill_alpha=random.randint(175, 235), radius=s(4))
+        value = f"{random.randint(0, 59):02d}:{random.randint(0, 59):02d}"
+        centered_text(x1, y1, x2, y2, value, size=random.randint(10, 15))
+
+    def draw_text_block():
+        w = random.randint(s(80), s(260))
+        h = random.randint(s(24), s(70))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        if random.random() < 0.5:
+            text(x1, y1, random.choice(UI_CLUTTER_WORDS), size=random.randint(9, 14), alpha=random.randint(130, 210))
+        text_lines(x1, y1 + s(16), x2, y2, max_lines=3)
+
+    def draw_tabs():
+        count = random.randint(2, 5)
+        w = random.randint(s(70), s(220))
+        h = random.randint(s(22), s(38))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        tab_w = max(s(24), (x2 - x1) // count)
+        for i in range(count):
+            tx1 = x1 + i * tab_w
+            if tx1 + tab_w > x2:
+                break
+            active = i == random.randrange(count)
+            draw.rounded_rectangle(
+                [tx1, y1, tx1 + tab_w - s(2), y2],
+                radius=s(4),
+                fill=rgba(theme["accent"] if active else theme["card"], random.randint(120, 210)),
+                outline=rgba(theme["text"], 45),
+                width=max(1, s(1)),
+            )
+            centered_text(tx1, y1, tx1 + tab_w - s(2), y2, random.choice(UI_CLUTTER_WORDS), size=random.randint(7, 10))
+
+    def draw_modal():
+        w, h = random.randint(s(170), s(310)), random.randint(s(110), s(220))
+        r = free_rect(w, h)
+        if not r:
+            return
+        x1, y1, x2, y2 = r
+        rounded_panel(x1, y1, x2, y2, fill_alpha=random.randint(190, 240), radius=s(8))
+        text(x1 + s(12), y1 + s(10), random.choice(UI_CLUTTER_WORDS), size=random.randint(10, 15))
+        text_lines(x1 + s(12), y1 + s(36), x2 - s(12), y2 - s(45), max_lines=4)
+        for i in range(random.randint(1, 2)):
+            bw = s(random.randint(45, 75))
+            bh = s(random.randint(20, 28))
+            bx = x2 - s(12) - (i + 1) * bw - i * s(8)
+            by = y2 - s(12) - bh
+            draw.rounded_rectangle(
+                [bx, by, bx + bw, by + bh],
+                radius=s(4),
+                fill=rgba(random.choice(UI_ACCENT_COLORS + [theme["card"]]), random.randint(140, 220)),
+                outline=rgba(theme["text"], 45),
+                width=max(1, s(1)),
+            )
+            centered_text(bx, by, bx + bw, by + bh, random.choice(UI_CLUTTER_WORDS), size=random.randint(7, 10))
+
+    overlay = Image.new("RGBA", (canvas_size, canvas_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    density = min(30, max(7, int(random.randint(10, 24) * scale)))
+    drawers = [
+        (draw_panel, 14),
+        (draw_window, 8),
+        (draw_toolbar, 5),
+        (draw_sidebar, 6),
+        (draw_chat, 10),
+        (draw_button, 10),
+        (draw_chart, 7),
+        (draw_toggle, 6),
+        (draw_progress, 6),
+        (draw_eval_bar, 5),
+        (draw_clock, 8),
+        (draw_text_block, 6),
+        (draw_tabs, 5),
+        (draw_modal, 5),
+    ]
+    choices, weights = zip(*drawers)
+    for _ in range(density):
+        random.choices(choices, weights=weights)[0]()
+
+    return Image.alpha_composite(canvas.convert("RGBA"), overlay).convert("RGB")
+
 
 def compose_full_board(
     board_img,
@@ -663,7 +1044,6 @@ def compose_web_ui(
     """
     theme = random.choice(UI_THEME_COLORS)
     canvas = Image.new("RGB", (canvas_size, canvas_size), theme["bg"])
-    draw = ImageDraw.Draw(canvas)
     font = get_default_font(size=12)
 
     # Board size occupies 55% - 72% of canvas height
@@ -674,7 +1054,16 @@ def compose_web_ui(
     # Position board slightly to the left to leave room for sidebar/eval bar
     board_ox = random.randint(40, max(42, canvas_size - target_board_size - 30))
     board_oy = (canvas_size - target_board_size) // 2
+
+    # Add random UI clutter to the background before the board is pasted.
+    canvas = draw_random_ui_clutter(
+        canvas,
+        canvas_size,
+        exclude_rects=[(board_ox, board_oy, board_ox + target_board_size, board_oy + target_board_size)],
+        theme=theme,
+    )
     canvas.paste(resized_board, (board_ox, board_oy))
+    draw = ImageDraw.Draw(canvas)
 
     # 1. Vertical Evaluation Bar on the left of the board
     eval_w = max(10, int(target_board_size * 0.035))
@@ -792,6 +1181,15 @@ def compose_embedded_board(
     max_y = canvas_size - target_board_size
     ox = random.randint(0, max_x)
     oy = random.randint(0, max_y)
+
+    # Add random UI clutter over the photo/texture background before pasting
+    # the board, so it acts as a distractor without occluding any labels.
+    canvas = draw_random_ui_clutter(
+        canvas,
+        canvas_size,
+        exclude_rects=[(ox, oy, ox + target_board_size, oy + target_board_size)],
+        theme=random.choice(UI_THEME_COLORS),
+    )
     canvas.paste(resized_board, (ox, oy))
 
     scaled_boxes = []
@@ -830,6 +1228,9 @@ def compose_multi_board(
     """
     theme = random.choice(UI_THEME_COLORS)
     canvas = Image.new("RGB", (canvas_size, canvas_size), theme["bg"])
+
+    # Add randomized UI clutter behind the broadcast layout.
+    canvas = draw_random_ui_clutter(canvas, canvas_size, theme=theme)
     draw = ImageDraw.Draw(canvas)
     font = get_default_font(size=11)
 
