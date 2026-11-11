@@ -1,0 +1,29 @@
+issues: 
+mixes up king and queen, bishops and pawns, sometimes knight and rook
+
+interestingly enough, my old generator (8c16c3decf88d93a5f5497d98ec87b1cef65eeed) performed really well. model trained on it performed the best. on 100 epochs with 30 patience.
+
+
+# 100 epochs with 30 petiance
+[FEN SUMMARY]
+Compared: 35 | Matches: 27 | Mismatched: 8 | Missing references: 0 | Board not detected: 0
+Exact Match Accuracy:         77.14%
+Mean FEN Error:               2.23%
+Square-Level Accuracy:        97.77%
+Final Evaluation Percentage:  97.77% (Error-Weighted)
+Report: /home/zai/Desktop/projects/python/2d-chess-pieces-detection/predictions/fen_match_results.json
+
+[DONE] 35 processed, 0 failed. Output: /home/zai/Desktop/projects/python/2d-chess-pieces-detection/predictions
+
+refined-search
+[FEN SUMMARY]
+Compared: 35 | Matches: 26 | Mismatched: 9 | Missing references: 0 | Board not detected: 0
+Exact Match Accuracy:         74.29%
+Mean FEN Error:               2.10%
+Square-Level Accuracy:        97.90%
+Final Evaluation Percentage:  97.90% (Error-Weighted)
+Report: /home/zai/Desktop/projects/python/2d-chess-pieces-detection/predictions/fen_match_results.json
+
+
+
+

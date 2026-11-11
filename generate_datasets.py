@@ -39,8 +39,51 @@ warnings.filterwarnings("ignore", category=UserWarning, module="PIL")
 # ==============================================================================
 # Custom Distortion Options
 # ==============================================================================
+# These are deliberately moderate: the generator already adds UI clutter and
+# photometric noise, and pieces are often 20-45 px. Heavy patches/glare at high
+# probability can fully occlude a piece while its label remains, which teaches
+# contradictory supervision (especially for king/queen and bishop/pawn).
 ADD_DISTORTIONS = True
-PROBABILTY = 0.85  # Probability of applying custom board/piece distortions per image
+DISTORTION_PROBABILITY = 0.35
+
+DISTORTION_LINES_RANGE = (3, 12)
+DISTORTION_LINE_WIDTH_RANGE = (1, 4)
+DISTORTION_LINE_ALPHA_RANGE = (40, 160)
+
+DISTORTION_GLARE_COUNT_RANGE = (1, 3)
+DISTORTION_GLARE_WIDTH_FRAC_RANGE = (0.20, 0.75)
+DISTORTION_GLARE_HEIGHT_FRAC_RANGE = (0.04, 0.18)
+DISTORTION_GLARE_ALPHA_RANGE = (25, 80)
+
+DISTORTION_PATCH_COUNT_RANGE = (1, 4)
+DISTORTION_PATCH_SIZE_RANGE = (12, 36)
+DISTORTION_PATCH_ALPHA_RANGE = (30, 80)
+
+DISTORTION_SALT_PEPPER_PROBABILITY = 0.30
+DISTORTION_SALT_PEPPER_DENSITY_RANGE = (0.005, 0.02)
+DISTORTION_SALT_PEPPER_ALPHA_RANGE = (80, 160)
+
+# Composition mix. The old mix was 5% full-board / 30% UI / 40% embedded /
+# 25% multi-board, which put most training pieces at 15-35 px while deployment
+# screenshots usually have boards filling most of the frame (~30-60 px pieces).
+COMPOSITION_WEIGHTS = {
+    "full": 0.32,      # board fills almost the entire image
+    "ui": 0.44,        # desktop/web UI, board 62-78% of the image
+    "embedded": 0.17,  # smaller board inside a scene
+    "multi": 0.07,     # tournament/broadcast view with a secondary board
+}
+
+WEB_BOARD_MIN_FRAC = 0.62
+WEB_BOARD_MAX_FRAC = 0.78
+
+EMBEDDED_BOARD_MIN_FRAC = 0.38
+EMBEDDED_BOARD_MAX_FRAC = 0.72
+EMBEDDED_BOARD_MODE_FRAC = 0.54
+
+MULTI_MAIN_MIN_FRAC = 0.52
+MULTI_MAIN_MAX_FRAC = 0.60
+MULTI_SECONDARY_FRAC = 0.38
+MULTI_SECONDARY_MIN_PX = 48
 
 # ==============================================================================
 # Class Definitions & Label Mappings
@@ -84,7 +127,7 @@ DEFAULT_IMAGE_SIZE = 640
 DEFAULT_BOARD_SIZE = 640
 DEFAULT_ALPHA_THRESHOLD = 20  # Filters out translucent antialiasing fringe and soft shadows
 DEFAULT_SEED = 42
-DEFAULT_MIN_PIECE_PX = 12  # Reject/redraw samples with pieces smaller than this
+DEFAULT_MIN_PIECE_PX = 18  # Reject/redraw samples with pieces smaller than this
 DEFAULT_MAX_SAMPLE_ATTEMPTS = 8  # Redraw attempts per sample before accepting the last one
 
 # Font setup
@@ -321,79 +364,93 @@ CHECK_COLOR = (235, 50, 50, 150)
 
 def apply_custom_distortions(img):
     """
-    Applies INTENSE distortions, dense scratches, heavy glare streaks, high-contrast
-    lines, and partial occlusions directly on top of the final image.
-    Strictly modifies visual appearance without altering existing object labels/bboxes.
+    Applies moderate scratches, glare, and partial occlusions on top of the
+    final image.
+
+    The goal is robustness to real-world screen/photo artifacts without
+    destroying the object evidence: patches are small relative to the board,
+    glare is sparse and translucent, and the effect is applied to only a third
+    of samples. This keeps labels meaningful for small pieces.
     """
-    if not ADD_DISTORTIONS or random.random() > PROBABILTY:
+    if not ADD_DISTORTIONS or random.random() > DISTORTION_PROBABILITY:
         return img
 
     img = img.convert("RGBA")
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     w, h = img.size
+    alpha_min, alpha_max = DISTORTION_LINE_ALPHA_RANGE
 
-    # 1. High-Density Lines, Scratches, and Grid Artifacts
-    num_lines = random.randint(15, 45)
+    # 1. Sparse lines / scratches
+    num_lines = random.randint(*DISTORTION_LINES_RANGE)
     for _ in range(num_lines):
         x1 = random.randint(0, w)
         y1 = random.randint(0, h)
         x2 = random.randint(0, w)
         y2 = random.randint(0, h)
         line_color = random.choice([
-            (255, 255, 255, random.randint(90, 220)),
-            (10, 10, 10, random.randint(80, 200)),
-            (255, 80, 80, random.randint(70, 180)),
-            (80, 180, 255, random.randint(70, 180)),
-            (255, 255, 100, random.randint(70, 180)),
+            (255, 255, 255, random.randint(alpha_min, alpha_max)),
+            (10, 10, 10, random.randint(alpha_min, alpha_max)),
+            (255, 80, 80, random.randint(alpha_min, alpha_max)),
+            (80, 180, 255, random.randint(alpha_min, alpha_max)),
+            (255, 255, 100, random.randint(alpha_min, alpha_max)),
         ])
-        width = random.randint(1, 7)
+        width = random.randint(*DISTORTION_LINE_WIDTH_RANGE)
         draw.line([(x1, y1), (x2, y2)], fill=line_color, width=width)
 
-    # 2. Heavy Glare Strips & Bright Reflections
-    num_glares = random.randint(3, 8)
+    # 2. Soft glare / reflection streaks
+    glare_alpha_min, glare_alpha_max = DISTORTION_GLARE_ALPHA_RANGE
+    glare_w_min, glare_w_max = DISTORTION_GLARE_WIDTH_FRAC_RANGE
+    glare_h_min, glare_h_max = DISTORTION_GLARE_HEIGHT_FRAC_RANGE
+    num_glares = random.randint(*DISTORTION_GLARE_COUNT_RANGE)
     for _ in range(num_glares):
         gx1 = random.randint(-w // 2, w)
         gy1 = random.randint(-h // 2, h)
-        gw = random.randint(int(w * 0.4), int(w * 1.5))
-        gh = random.randint(int(h * 0.08), int(h * 0.40))
+        gw = random.randint(int(w * glare_w_min), int(w * glare_w_max))
+        gh = random.randint(int(h * glare_h_min), int(h * glare_h_max))
 
         glare_img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         g_draw = ImageDraw.Draw(glare_img)
         g_color = random.choice([
-            (255, 255, 255, random.randint(40, 130)),
-            (230, 240, 255, random.randint(50, 140)),
-            (255, 245, 200, random.randint(45, 120)),
+            (255, 255, 255, random.randint(glare_alpha_min, glare_alpha_max)),
+            (230, 240, 255, random.randint(glare_alpha_min, glare_alpha_max)),
+            (255, 245, 200, random.randint(glare_alpha_min, glare_alpha_max)),
         ])
         g_draw.ellipse([gx1, gy1, gx1 + gw, gy1 + gh], fill=g_color)
         angle = random.uniform(-60, 60)
         glare_img = glare_img.rotate(angle, resample=Image.Resampling.BICUBIC, center=(gx1 + gw // 2, gy1 + gh // 2))
         overlay = Image.alpha_composite(overlay, glare_img)
 
-    # 3. Dense Patchy Occlusions & Synthetic Artifact Blocks
-    num_patches = random.randint(6, 18)
+    # 3. Small partial occlusions / artifact blocks
+    patch_alpha_min, patch_alpha_max = DISTORTION_PATCH_ALPHA_RANGE
+    patch_min, patch_max = DISTORTION_PATCH_SIZE_RANGE
+    num_patches = random.randint(*DISTORTION_PATCH_COUNT_RANGE)
     for _ in range(num_patches):
-        px = random.randint(0, w - 20)
-        py = random.randint(0, h - 20)
-        pw = random.randint(20, 110)
-        ph = random.randint(20, 110)
+        pw = random.randint(patch_min, patch_max)
+        ph = random.randint(patch_min, patch_max)
+        px = random.randint(0, max(0, w - pw))
+        py = random.randint(0, max(0, h - ph))
         patch_color = random.choice([
-            (255, 255, 255, random.randint(35, 110)),
-            (15, 15, 15, random.randint(40, 120)),
-            (120, 120, 120, random.randint(40, 100)),
+            (255, 255, 255, random.randint(patch_alpha_min, patch_alpha_max)),
+            (15, 15, 15, random.randint(patch_alpha_min, patch_alpha_max)),
+            (120, 120, 120, random.randint(patch_alpha_min, patch_alpha_max)),
         ])
         if random.random() < 0.5:
             draw.rectangle([px, py, px + pw, py + ph], fill=patch_color)
         else:
             draw.ellipse([px, py, px + pw, py + ph], fill=patch_color)
 
-    # 4. Salt-and-Pepper Grain/Noise Overlay
-    if random.random() < 0.70:
+    # 4. Light salt-and-pepper grain
+    if random.random() < DISTORTION_SALT_PEPPER_PROBABILITY:
         np_arr = np.array(overlay)
-        noise_mask = np.random.rand(h, w) < random.uniform(0.03, 0.08)
-        np_arr[noise_mask, :3] = np.random.choice([0, 255], size=(np.count_nonzero(noise_mask), 3))
-        np_arr[noise_mask, 3] = np.random.randint(100, 220, size=np.count_nonzero(noise_mask))
-        overlay = Image.fromarray(np_arr)
+        density = random.uniform(*DISTORTION_SALT_PEPPER_DENSITY_RANGE)
+        noise_mask = np.random.rand(h, w) < density
+        count = np.count_nonzero(noise_mask)
+        if count:
+            np_arr[noise_mask, :3] = np.random.choice([0, 255], size=(count, 3))
+            pepper_min, pepper_max = DISTORTION_SALT_PEPPER_ALPHA_RANGE
+            np_arr[noise_mask, 3] = np.random.randint(pepper_min, pepper_max, size=count)
+            overlay = Image.fromarray(np_arr)
 
     return Image.alpha_composite(img, overlay).convert("RGB")
 
@@ -1059,7 +1116,10 @@ def compose_web_ui(
     canvas = Image.new("RGB", (canvas_size, canvas_size), theme["bg"])
     font = get_default_font(size=12)
 
-    target_board_size = random.randint(int(canvas_size * 0.55), int(canvas_size * 0.72))
+    target_board_size = random.randint(
+        int(canvas_size * WEB_BOARD_MIN_FRAC),
+        int(canvas_size * WEB_BOARD_MAX_FRAC),
+    )
     bw, bh = board_img.size
     resized_board = board_img.resize((target_board_size, target_board_size), Image.Resampling.LANCZOS)
 
@@ -1124,14 +1184,14 @@ def compose_web_ui(
 
 def get_embedded_board_size(canvas_size):
     """Chooses a medium/small embedded board size as a fraction of the canvas."""
-    min_size = max(120, int(round(canvas_size * 0.19)))
-    max_size = int(round(canvas_size * 0.62))
+    min_size = max(160, int(round(canvas_size * EMBEDDED_BOARD_MIN_FRAC)))
+    max_size = int(round(canvas_size * EMBEDDED_BOARD_MAX_FRAC))
 
     min_size = min(min_size, canvas_size - 8)
     max_size = min(max_size, canvas_size - 4)
     max_size = max(max_size, min_size + 1)
 
-    mode = int(round(canvas_size * 0.375))
+    mode = int(round(canvas_size * EMBEDDED_BOARD_MODE_FRAC))
     mode = min(max(mode, min_size), max_size)
     return int(random.triangular(min_size, max_size, mode))
 
@@ -1215,7 +1275,10 @@ def compose_multi_board(
     draw.text((16, 10), "CHESS TOURNAMENT BROADCAST • LIVE", fill=theme["text"], font=font)
     draw.text((canvas_size - 80, 10), "MATCH #1", fill=theme["accent"], font=font)
 
-    main_size = random.randint(int(canvas_size * 0.54), int(canvas_size * 0.62))
+    main_size = random.randint(
+        int(canvas_size * MULTI_MAIN_MIN_FRAC),
+        int(canvas_size * MULTI_MAIN_MAX_FRAC),
+    )
     bw1, bh1 = main_board_img.size
     resized_main = main_board_img.resize((main_size, main_size), Image.Resampling.LANCZOS)
     main_ox = 18
@@ -1235,9 +1298,11 @@ def compose_multi_board(
     main_board_box = (12, m_chk_x1, m_chk_y1, m_chk_x2, m_chk_y2)
 
     sec_max_w = canvas_size - (main_ox + main_size) - 24
-    sec_size = min(int(canvas_size * 0.33), sec_max_w)
-    if sec_size < 160:
-        sec_size = 160
+    sec_size = min(int(canvas_size * MULTI_SECONDARY_FRAC), sec_max_w)
+    if sec_size < MULTI_SECONDARY_MIN_PX:
+        # Extremely small canvases cannot fit a secondary board; keep the main one.
+        return canvas, scaled_boxes, [main_board_box]
+
     bw2, bh2 = sec_board_img.size
     resized_sec = sec_board_img.resize((sec_size, sec_size), Image.Resampling.LANCZOS)
     sec_ox = canvas_size - sec_size - 14
@@ -1399,7 +1464,8 @@ def _generate_single_sample_once(
 
     board_img = apply_board_overlays(board_img, fen, tile_size, flipped=flipped)
 
-    comp_type = random.choices(["full", "ui", "embedded", "multi"], weights=[0.05, 0.30, 0.40, 0.25])[0]
+    comp_types = list(COMPOSITION_WEIGHTS)
+    comp_type = random.choices(comp_types, weights=[COMPOSITION_WEIGHTS[t] for t in comp_types])[0]
 
     if comp_type == "full":
         bg_color = get_random_solid_background(light_tile_color, dark_tile_color)
@@ -1685,7 +1751,9 @@ def main():
     print(f"Target counts: Train={args.train_count}, Val={args.val_count}, Test={args.test_count}")
     print(f"Output Resolution: {args.imgsz}x{args.imgsz} | Random Seed: {args.seed}")
     print(f"Output Directory: {args.out_dir}")
-    print(f"Custom Distortions Enabled: {ADD_DISTORTIONS} (Probability: {PROBABILTY})")
+    print(f"Composition Mix: {COMPOSITION_WEIGHTS}")
+    print(f"Minimum Piece Size Before Redraw: {args.min_piece_px}px")
+    print(f"Custom Distortions Enabled: {ADD_DISTORTIONS} (Probability: {DISTORTION_PROBABILITY})")
 
     if args.clean and os.path.exists(args.out_dir):
         print(f"Cleaning existing directory: {args.out_dir}")
